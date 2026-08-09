@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AssemblyName>KakiniwaYmm4Import</AssemblyName>
+    <RootNamespace>KakiniwaYmm4Import</RootNamespace>
+    <!-- YMM4 のインストール先。環境変数 YMM4_DIR で指定(未設定なら既定候補) -->
+    <YMM4Dir Condition="'$(YMM4_DIR)' != ''">$(YMM4_DIR)</YMM4Dir>
+    <YMM4Dir Condition="'$(YMM4Dir)' == '' And Exists('$(USERPROFILE)\Desktop\ymm4\YukkuriMovieMaker.exe')">$(USERPROFILE)\Desktop\ymm4</YMM4Dir>
+    <YMM4Dir Condition="'$(YMM4Dir)' == '' And Exists('D:\ymm4\YukkuriMovieMaker.exe')">D:\ymm4</YMM4Dir>
+    <YMM4Dir Condition="'$(YMM4Dir)' == '' And Exists('C:\ymm4\YukkuriMovieMaker.exe')">C:\ymm4</YMM4Dir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="YukkuriMovieMaker.Plugin">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.Plugin.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="YukkuriMovieMaker">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="YukkuriMovieMaker.Controls">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.Controls.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="YukkuriMovieMaker.Settings">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.Settings.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

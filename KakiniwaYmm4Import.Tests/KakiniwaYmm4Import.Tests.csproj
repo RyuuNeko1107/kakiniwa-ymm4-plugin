@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- プラグイン本体(KakiniwaYmm4Import)の純ロジックの単体テスト。
+       本体の csproj・配布物には一切影響しない(ソースをリンク参照で取り込むだけ)。
+       実行: <dotnet> test ymm4-plugin/KakiniwaYmm4Import.Tests
+       YMM4 の場所は環境変数 YMM4_DIR で上書き可(build-plugin.ps1 と同じ流儀)。 -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!-- 本体は SDK レスビルド(build-plugin.ps1)なので nullable 警告等はそのまま許容 -->
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
+    <YMM4Dir Condition="'$(YMM4_DIR)' != ''">$(YMM4_DIR)</YMM4Dir>
+    <YMM4Dir Condition="'$(YMM4Dir)' == '' And Exists('$(USERPROFILE)\Desktop\ymm4\YukkuriMovieMaker.exe')">$(USERPROFILE)\Desktop\ymm4</YMM4Dir>
+    <YMM4Dir Condition="'$(YMM4Dir)' == '' And Exists('D:\ymm4\YukkuriMovieMaker.exe')">D:\ymm4</YMM4Dir>
+    <YMM4Dir Condition="'$(YMM4Dir)' == '' And Exists('C:\ymm4\YukkuriMovieMaker.exe')">C:\ymm4</YMM4Dir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 本体ソースをそのままコンパイル対象に(実装は一切変更しない) -->
+    <Compile Include="..\KakiniwaYmm4Import\*.cs" LinkBase="plugin-src" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- テスト実行時の型ロード(xunit の探索)用に Private=true でコピーする -->
+    <Reference Include="YukkuriMovieMaker.Plugin">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.Plugin.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="YukkuriMovieMaker">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="YukkuriMovieMaker.Controls">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.Controls.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="YukkuriMovieMaker.Settings">
+      <HintPath>$(YMM4Dir)\YukkuriMovieMaker.Settings.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>
