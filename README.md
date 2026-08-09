@@ -63,7 +63,7 @@ dotnet test KakiniwaYmm4Import.Tests   # 純ロジックのテスト(49件)
 `MainModel.AddVoiceItemAsync`、`Timeline.AddItems` など)をリフレクション経由で
 使っています。YMM4 の更新で動かなくなる
 可能性があり、その際はログに注意を出して安全側(何もしない)に倒れる設計です。
-検証済みの環境は YMM4 v4.54.0.1 / .NET 10 です。
+検証済みの環境は YMM4 v4.54.0.1 および v4.55.1 / .NET 10 です。
 
 ## 不具合報告・要望
 
