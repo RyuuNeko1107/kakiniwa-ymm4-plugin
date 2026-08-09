@@ -27,7 +27,7 @@ namespace KakiniwaYmm4Import
         /// <summary>このプラグイン自身の版。書き庭側は timeline.json の pluginMin に
         /// 「このパックを正しく読むのに必要な最低版」を書く。突き合わせて古ければ警告する
         /// (本体は自動更新・プラグインは別配布なので、ずれた組み合わせは必ず起きる)。</summary>
-        public const string PluginVersion = "0.2.4";
+        public const string PluginVersion = "0.3.0";
     }
 
     public class PackGenerator

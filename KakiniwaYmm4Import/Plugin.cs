@@ -22,7 +22,9 @@ namespace KakiniwaYmm4Import
 
     public class KakiniwaImportPlugin : IToolPlugin
     {
-        public string Name { get { return "書き庭の台本を取り込む(β版)"; } }
+        // ★版数を名前に含める。YMM4のプラグイン一覧・ツールメニューでどの版が
+        //   入っているか確認できるように(利用者から「本体でバージョン確認できるように」)
+        public string Name { get { return "書き庭の台本を取り込む(β版 v" + PackSchema.PluginVersion + ")"; } }
         public Type ViewModelType { get { return typeof(ImportToolViewModel); } }
         public Type ViewType { get { return typeof(ImportToolView); } }
     }

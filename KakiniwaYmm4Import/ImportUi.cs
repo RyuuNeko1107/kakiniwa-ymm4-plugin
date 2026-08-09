@@ -317,6 +317,55 @@ namespace KakiniwaYmm4Import
                 row.Children.Add(warn);
                 mappingPanel.Children.Add(row);
                 combos.Add(Tuple.Create(c.Id, combo));
+
+                // 立ち絵ごとの割り当て行: PSDファイルが異なる立ち絵を複数持つキャラだけ出す。
+                // 別PSDの立ち絵は、その立ち絵タイプの合うYMM4キャラを個別に選ぶ(割り当て済み
+                // キャラへのPSD強制上書きはYMM4クラッシュの原因・2026-08-09)。
+                // 「上と同じ」を選んだ立ち絵は従来どおりPSD差し替えで配置される。
+                var psdPortraits = (c.Portraits ?? new List<PackPortrait>())
+                    .Where(p => p.Psd != null && !string.IsNullOrEmpty(p.Psd.Path)).ToList();
+                if (psdPortraits.Select(p => p.Psd!.Path).Distinct().Count() >= 2)
+                {
+                    foreach (var p in psdPortraits)
+                    {
+                        var key = c.Id + "/" + p.Id;
+                        var prow = new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            Margin = new Thickness(16, 2, 0, 2),
+                        };
+                        prow.Children.Add(new TextBlock
+                        {
+                            Text = "└ 立ち絵「" + p.Id + "」 → ",
+                            VerticalAlignment = VerticalAlignment.Center,
+                            MinWidth = 90,
+                        });
+                        var pcombo = new ComboBox { MinWidth = 200 };
+                        pcombo.Items.Add(new CharacterChoice
+                        {
+                            Display = "(上と同じキャラでPSD差し替え)",
+                            Name = "",
+                            Model = null,
+                        });
+                        foreach (var opt in options) pcombo.Items.Add(opt);
+                        pcombo.SelectedIndex = 0;
+                        // 既定選択: ①前回保存 → ②パックの Ymm4Name 一致 → ③上と同じ
+                        string? psaved;
+                        settings.SpeakerMap.TryGetValue(key, out psaved);
+                        var pdefault = psaved ?? p.Ymm4Name;
+                        if (!string.IsNullOrEmpty(pdefault))
+                        {
+                            for (var i = 1; i < pcombo.Items.Count; i++)
+                            {
+                                var cc = (CharacterChoice)pcombo.Items[i]!;
+                                if (cc.Name == pdefault) { pcombo.SelectedIndex = i; break; }
+                            }
+                        }
+                        prow.Children.Add(pcombo);
+                        mappingPanel.Children.Add(prow);
+                        combos.Add(Tuple.Create(key, pcombo));
+                    }
+                }
             }
             placeButton.IsEnabled = true;
             registerPresetsButton.IsEnabled = true;

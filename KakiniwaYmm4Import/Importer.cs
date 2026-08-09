@@ -1,4 +1,4 @@
-﻿// 配置本体: タイムラインへのアイテム配置(時間計算・レーン割り当て・実尺での再配置)と表情プリセット登録。
+// 配置本体: タイムラインへのアイテム配置(時間計算・レーン割り当て・実尺での再配置)と表情プリセット登録。
 
 using System;
 using System.Collections.Generic;
@@ -88,7 +88,23 @@ namespace KakiniwaYmm4Import
                         if (exprsP.Count == 0) continue;
                         string? target;
                         var desc = "立ち絵 " + p.Id;
-                        if (!string.IsNullOrEmpty(p.Ymm4Name))
+                        // 立ち絵ごとの割り当て(取り込みダイアログの立ち絵行。複合キー charId/portraitId)を
+                        // 最優先。基底キャラと同じ選択なら従来の Default/サイドカー経路へ。
+                        CharacterChoice? selP;
+                        var explicitSel = speakerMap.TryGetValue(chara.Id + "/" + p.Id, out selP)
+                            && selP != null && selP.Model != null ? selP : null;
+                        if (explicitSel != null && explicitSel.Name != choice.Name)
+                        {
+                            var ipS = GetPropValue(explicitSel.Model!, "TachieDefaultItemParameter");
+                            target = ipS != null ? GetPropValue(ipS, "FilePath") as string : null;
+                            desc += " → " + explicitSel.Name;
+                            if (string.IsNullOrEmpty(target) || !File.Exists(target))
+                            {
+                                log("  " + chara.Name + "/" + desc + ": 割り当て先YMM4キャラのPSDが見つからずスキップ");
+                                continue;
+                            }
+                        }
+                        else if (explicitSel == null && !string.IsNullOrEmpty(p.Ymm4Name))
                         {
                             // 別のYMM4キャラに割り当てた立ち絵: そのキャラの既定PSDへ
                             if (ymm4Chars == null) ymm4Chars = GetYmm4Characters(_ => { });
@@ -291,17 +307,7 @@ namespace KakiniwaYmm4Import
                 for (var i = 0; i < evs.Count; i++)
                     if (evs[i].Type == "prop" && assetExists(evs[i].Asset)) propIdx.Add(i);
                 propIdx.Sort((a, b) => evs[a].Start.CompareTo(evs[b].Start));
-                var laneEnds = new List<double>(); // 各スロットが空く時刻
-                foreach (var i in propIdx)
-                {
-                    var start = evs[i].Start;
-                    var slot = -1;
-                    for (var s = 0; s < laneEnds.Count; s++)
-                        if (laneEnds[s] <= start + 1e-6) { slot = s; break; } // このスロットは空いている
-                    if (slot < 0) { slot = laneEnds.Count; laneEnds.Add(0); }
-                    laneEnds[slot] = propEnd(i);
-                    propSlot[i] = slot;
-                }
+                propSlot = AssignGreedySlots(propIdx, i2 => evs[i2].Start, propEnd);
             }
 
             if (evs.Any(e2 => e2.Type == "bg" && assetExists(e2.Asset))) addLane("bg");
@@ -369,6 +375,11 @@ namespace KakiniwaYmm4Import
             var warnedUnmapped = new HashSet<string>();
             // 配置済み立ち絵アイテム(退場時に尺を切り詰めるための参照): charId → (アイテム, 開始秒)
             var tachieItems = new Dictionary<string, Tuple<BaseItem, double>>();
+            // portrait 切替で置き直した立ち絵アイテム(行内立ち絵)。これが後続の portrait で
+            // 切られたら「セリフ終了時刻(推定)で切られた」ので、実尺再配置での終端合わせ対象になる。
+            var portraitPlacedItems = new HashSet<object>();
+            // 終端合わせ対象: アイテム → 対応ボイスの旧開始フレーム(アンカー)
+            var portraitEndSync = new Dictionary<object, int>();
 
             // 複数立ち絵(別PSD切替): charId → (立ち絵id → PackPortrait)、現在の立ち絵id
             var portraitsById = new Dictionary<string, Dictionary<string, PackPortrait>>();
@@ -382,21 +393,43 @@ namespace KakiniwaYmm4Import
                 var def = pc.Portraits.FirstOrDefault(p => p.Default) ?? pc.Portraits[0];
                 activePortrait[pc.Id] = def.Id;
             }
+            // アクティブ立ち絵に対する「配置用キャラ」解決。
+            // ★割り当て済み(Ymm4Name あり)のYMM4キャラへ OverrideTachieFilePath で別PSDを
+            //   強制すると、立ち絵タイプ不一致等でYMM4ごと落ちる(実機クラッシュ 2026-08-09)。
+            //   Ymm4Name がある立ち絵は「そのYMM4キャラ自身の既定立ち絵」で置き、上書きしない。
+            //   返り値: Item1=配置キャラ, Item2=PSD上書き(Override)してよいか。
+            //   null=割り当て先YMM4キャラが見つからない(呼び出し側でスキップ/仮置き)。
+            //   優先順: ①取り込みダイアログの立ち絵ごとの割り当て(speakerMap の複合キー
+            //   "charId/portraitId")→ ②パックの Ymm4Name → ③基底キャラ+Override(従来)。
+            //   ①②で基底キャラと同じ名前が選ばれている場合は従来どおりPSD差し替えで置く。
+            List<CharacterChoice>? ymm4CharsForHost = null; // 必要になったら一度だけ取得
+            Func<string, CharacterChoice, PackPortrait?, Tuple<CharacterChoice, bool>?> resolveTachieHost =
+                (charId0, baseChoice, portrait) =>
+            {
+                if (portrait == null) return Tuple.Create(baseChoice, true); // 単一立ち絵: 従来
+                CharacterChoice? sel;
+                var hasSel = speakerMap.TryGetValue(charId0 + "/" + portrait.Id, out sel)
+                    && sel != null && sel.Model != null;
+                var decision = DecideTachieHostName(
+                    hasSel ? sel!.Name : null, PortraitAssignedName(portrait), baseChoice.Name);
+                if (decision.Item1 == null) return Tuple.Create(baseChoice, true); // 基底+Override
+                if (hasSel && sel!.Name == decision.Item1) return Tuple.Create(sel, false);
+                if (ymm4CharsForHost == null) ymm4CharsForHost = GetYmm4Characters(_ => { });
+                var m = FindYmm4CharacterByName(ymm4CharsForHost, decision.Item1);
+                return m != null ? Tuple.Create(m, false) : null;
+            };
+            // ★ボイスも同じ解決結果で生成する(音声話者も変えないと表情アイテム・口パクの
+            //   対応が切れる)。これでボイスと立ち絵/表情の CharacterName は常に一致し、
+            //   実尺再配置の突き合わせも従来の CharacterName ベースのままで整合する。
             // 現在アクティブな立ち絵(複数立ち絵キャラのみ。単一立ち絵は null)
             Func<string, PackPortrait?> activePortraitOf = (charId) =>
             {
+                // 保険込みの解決(FindPortrait): 書き庭側は id へ正規化して送るが、古い書き庭が
+                // 作ったパックでは表示名・YMM4名のまま入っていることがある。表情は元から両対応
+                // なので、立ち絵だけ id 限定で「切替が黙って効かない」になるのを防ぐ。
                 if (portraitsById.TryGetValue(charId, out var m)
                     && activePortrait.TryGetValue(charId, out var pid))
-                {
-                    if (m.TryGetValue(pid, out var pr)) return pr;
-                    // 保険: 書き庭側は id へ正規化して送るが、古い書き庭が作ったパックでは
-                    // 表示名・YMM4名のまま入っていることがある。表情は元から両対応なので、
-                    // 立ち絵だけ id 限定で「切替が黙って効かない」になるのを防ぐ。
-                    foreach (var kv in m)
-                    {
-                        if (kv.Value.Ymm4Name == pid) return kv.Value;
-                    }
-                }
+                    return FindPortrait(m, pid);
                 return null;
             };
 
@@ -573,14 +606,25 @@ namespace KakiniwaYmm4Import
                                        ?? (chara != null ? (chara.Ymm4Name ?? chara.Name) : null)
                                        ?? ev.SpeakerName ?? "";
 
+                        // ★アクティブ立ち絵の割り当て先キャラ解決(立ち絵・表情・ボイス共通)。
+                        //   別PSD立ち絵がアクティブな間のセリフは、ボイスもそのYMM4キャラの
+                        //   声設定で生成する(音声話者も変えないと表情アイテム・口パクの対応が
+                        //   切れる)。割り当てなし/解決不能なら従来どおり基底キャラ。
+                        //   レーン(voice:charId)は書き庭キャラ単位のまま。
+                        var apSerif = activePortraitOf(charId);
+                        var serifHost = choice != null && choice.Model != null
+                            ? resolveTachieHost(charId, choice, apSerif) : null;
+                        var voiceChoice = serifHost != null ? serifHost.Item1 : choice;
+                        var voiceName = serifHost != null ? serifHost.Item1.Name : ymm4Name;
+
                         // 本命: MainModel.AddVoiceItemAsync(UIのセリフ追加の完全経路。
                         // タイムライン追加+ボイス生成トリガーまでYMM4自身がやる)
                         VoiceItem? voice = null;
                         var addedByModel = false;
-                        if (choice != null && choice.Model != null && mainModel != null)
+                        if (voiceChoice != null && voiceChoice.Model != null && mainModel != null)
                         {
                             var r = await AddVoiceViaMainModel(mainModel,
-                                FrameAt(ev.Start), L(laneOf("voice:" + charId)), choice.Model, ev.Text ?? "", log);
+                                FrameAt(ev.Start), L(laneOf("voice:" + charId)), voiceChoice.Model, ev.Text ?? "", log);
                             addedByModel = r.Item1;
                             voice = r.Item2;
                             if (addedByModel)
@@ -590,19 +634,19 @@ namespace KakiniwaYmm4Import
                         if (!addedByModel)
                         {
                             // 保険1: 正規ファクトリで生成して自前配置
-                            if (choice != null && choice.Model != null)
-                                voice = await CreateVoiceItemViaFactory(choice.Model, ev.Text ?? "", log);
+                            if (voiceChoice != null && voiceChoice.Model != null)
+                                voice = await CreateVoiceItemViaFactory(voiceChoice.Model, ev.Text ?? "", log);
                             if (voice == null)
                             {
                                 // 保険2(未割り当て含む): 手組みプレースホルダ
                                 voice = new VoiceItem();
                                 SetProps(voice, log,
-                                    P("CharacterName", ymm4Name), P("Serif", ev.Text ?? ""),
+                                    P("CharacterName", voiceName), P("Serif", ev.Text ?? ""),
                                     P("Length", F(ev.Seconds)));
-                                if (choice != null && choice.Model != null)
+                                if (voiceChoice != null && voiceChoice.Model != null)
                                 {
-                                    TrySetInstance(voice, "Character", choice.Model, log);
-                                    CopyCharacterDefaults(voice, choice.Model, log);
+                                    TrySetInstance(voice, "Character", voiceChoice.Model, log);
+                                    CopyCharacterDefaults(voice, voiceChoice.Model, log);
                                 }
                             }
                             SetProps(voice, log, P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("voice:" + charId))));
@@ -620,19 +664,33 @@ namespace KakiniwaYmm4Import
                             // YMM4登録キャラ: 立ち絵アイテム1本+表情アイテムで切り替え(YMM4の流儀)
                             if (!tachiePlaced.Contains(charId) && !tachieUnavailable.Contains(charId))
                             {
+                                var apTachie = apSerif;
+                                var host = serifHost;
+                                if (host == null)
+                                {
+                                    tachieUnavailable.Add(charId);
+                                    log("  立ち絵「" + (apTachie != null ? apTachie.Id : "?")
+                                        + "」の割り当て先YMM4キャラ「" + PortraitAssignedName(apTachie)
+                                        + "」が見つからないため、パックの画像で仮置きします");
+                                }
+                                else
+                                {
+                                var hostChoice = host.Item1;
                                 var tachie = new TachieItem();
                                 SetProps(tachie, log,
-                                    P("CharacterName", ymm4Name), P("Frame", FrameAt(ev.Start)),
+                                    P("CharacterName", hostChoice.Name), P("Frame", FrameAt(ev.Start)),
                                     P("Layer", L(laneOf("chara:" + charId))), P("Length", F(totalEnd - ev.Start)),
-                                    P("Remark", "立ち絵: " + ymm4Name));
-                                TrySetInstance(tachie, "Character", choice!.Model!, log);
-                                if (SetTachieParameter(tachie, choice!.Model!, log))
+                                    P("Remark", "立ち絵: " + hostChoice.Name));
+                                TrySetInstance(tachie, "Character", hostChoice.Model!, log);
+                                if (SetTachieParameter(tachie, hostChoice.Model!, log))
                                 {
                                     tachiePlaced.Add(charId);
                                     tachieItems[charId] = Tuple.Create((BaseItem)tachie, ev.Start);
-                                    // 複数立ち絵: アクティブな立ち絵のPSDに差し替え(ボイスは主キャラのまま)
-                                    var apTachie = activePortraitOf(charId);
-                                    if (apTachie?.Psd != null)
+                                    // 複数立ち絵: 同じYMM4キャラのままの立ち絵だけPSDを差し替える。
+                                    // ★別YMM4キャラに割り当てた立ち絵へは OverrideTachieFilePath しない。
+                                    //   立ち絵設定済みキャラへの強制上書きはYMM4ごと落ちる
+                                    //   (実機クラッシュ 2026-08-09)。そのキャラ自身の既定立ち絵が正。
+                                    if (host.Item2 && apTachie?.Psd != null)
                                         OverrideTachieFilePath(tachie, ResolvePackPath(packDir, apTachie.Psd.Path), log);
                                     // サイズ・位置: パックの立ち絵実寸が分かればフィット、無ければX位置のみ
                                     var defaultPortrait = ResolvePortrait(packDir, chara, apTachie, null);
@@ -655,7 +713,8 @@ namespace KakiniwaYmm4Import
                                 else
                                 {
                                     tachieUnavailable.Add(charId);
-                                    log("  → 「" + ymm4Name + "」はYMM4側に立ち絵が無いので、パックの画像で仮置きします");
+                                    log("  → 「" + hostChoice.Name + "」はYMM4側に立ち絵が無いので、パックの画像で仮置きします");
+                                }
                                 }
                             }
                             if (tachieUnavailable.Contains(charId))
@@ -712,15 +771,26 @@ namespace KakiniwaYmm4Import
                                             break;
                                         }
                                     }
-                                    var face = new TachieFaceItem();
-                                    SetProps(face, log,
-                                        P("CharacterName", ymm4Name), P("Frame", FrameAt(ev.Start)),
-                                        P("Layer", L(laneOf("face:" + charId))),
-                                        P("Length", Math.Max(1, F(untilSec - ev.Start))),
-                                        P("Remark", "表情: " + ev.Expression));
-                                    TrySetInstance(face, "Character", choice!.Model!, log);
-                                    await SetFaceParameter(face, choice!.Model!, layers, layerIds, log);
-                                    items.Add(face);
+                                    // ★表情アイテムの対象キャラは、立ち絵・ボイスと同じ解決結果に合わせる。
+                                    //   別YMM4キャラの立ち絵に基底キャラ宛の表情を出してもズレて効かない。
+                                    var hostF = serifHost;
+                                    if (hostF == null)
+                                    {
+                                        log("  表情「" + ev.Expression + "」: 立ち絵の割り当て先YMM4キャラが"
+                                            + "見つからないためスキップ");
+                                    }
+                                    else
+                                    {
+                                        var face = new TachieFaceItem();
+                                        SetProps(face, log,
+                                            P("CharacterName", hostF.Item1.Name), P("Frame", FrameAt(ev.Start)),
+                                            P("Layer", L(laneOf("face:" + charId))),
+                                            P("Length", Math.Max(1, F(untilSec - ev.Start))),
+                                            P("Remark", "表情: " + ev.Expression));
+                                        TrySetInstance(face, "Character", hostF.Item1.Model!, log);
+                                        await SetFaceParameter(face, hostF.Item1.Model!, layers, layerIds, log);
+                                        items.Add(face);
+                                    }
                                 }
                             }
                         }
@@ -829,21 +899,94 @@ namespace KakiniwaYmm4Import
                     }
                     case "portrait":
                     {
-                        // 立ち絵切替: 現在の立ち絵アイテムを終了し(尺を切る)、以降のセリフで
-                        // 新しい立ち絵(別PSD)で置き直させる。ボイスは主キャラのまま。
+                        // 立ち絵切替: 現在の立ち絵アイテムをこの時刻で終了し(尺を切る)、キャラが
+                        // 画面に居るなら新しい立ち絵(別PSD)のアイテムを同位置・同レーンで即置き直す
+                        // (行内立ち絵: 1セリフだけの切替に、次の同キャラ serif を待たず追随する)。
+                        // 尺は末尾までの暫定で、次の portrait/退場イベントが切る(serif 側の作りと同じ)。
+                        // ボイスは主キャラのまま。
                         var sp = ev.Speaker;
-                        if (sp != null && portraitsById.ContainsKey(sp) && !string.IsNullOrEmpty(ev.Name))
+                        Dictionary<string, PackPortrait>? pmap;
+                        if (sp == null || !portraitsById.TryGetValue(sp, out pmap) || pmap == null
+                            || string.IsNullOrEmpty(ev.Name))
+                            break;
+                        Tuple<BaseItem, double>? placed;
+                        tachieItems.TryGetValue(sp, out placed);
+                        var plan = PlanPortraitSwitch(pmap, ev.Name!,
+                            placed != null ? (double?)placed.Item2 : null, ev.Start, totalEnd, fps, frameOffset);
+                        if (plan == null)
                         {
-                            activePortrait[sp] = ev.Name!;
-                            Tuple<BaseItem, double>? placed;
-                            if (tachieItems.TryGetValue(sp, out placed) && placed != null)
-                            {
-                                SetProps(placed.Item1, log, P("Length", Math.Max(1, F(ev.Start - placed.Item2))));
-                                tachieItems.Remove(sp);
-                                tachiePlaced.Remove(sp);
-                            }
-                            log("  立ち絵切替: " + sp + " → " + ev.Name);
+                            // ★未登録の立ち絵名: 状態もアイテムも触らない(ログのみ)。
+                            //   触ると activePortraitOf が null になり、既定PSDフォールバックで
+                            //   無駄な切断・別の顔での置き直しが起きる(2026-08 監査)。
+                            log("  立ち絵切替: 「" + ev.Name + "」は登録されていない立ち絵名のためスキップ("
+                                + sp + " は現在の立ち絵のまま)");
+                            break;
                         }
+                        activePortrait[sp] = plan.PortraitId;
+                        if (placed != null)
+                        try
+                        {
+                            SetProps(placed.Item1, log, P("Length", plan.CutLength));
+                            // portrait 由来で置いたアイテムを portrait で切った=セリフ終了時刻(推定)での
+                            // 切断。実尺再配置で対応ボイスの実終端に合わせるためアンカーを覚える。
+                            if (portraitPlacedItems.Contains(placed.Item1))
+                                portraitEndSync[placed.Item1] = FrameAt(placed.Item2);
+                            tachieItems.Remove(sp);
+                            tachiePlaced.Remove(sp);
+                            // 置き直し: キャラが画面に居るので、新しい立ち絵をこの時刻から置く
+                            CharacterChoice? chP;
+                            if (speakerMap.TryGetValue(sp, out chP) && chP != null && chP.Model != null)
+                            {
+                                var charaP = pack.Characters.FirstOrDefault(c => c.Id == sp);
+                                // ★切替先立ち絵が別YMM4キャラ割り当てなら、そのキャラで置く
+                                //   (以降のセリフのボイスも serif 側で同じ解決結果になり、
+                                //   CharacterName はボイスと常に一致する)
+                                //   (基底キャラへのPSD強制上書きはYMM4クラッシュの原因・2026-08-09)
+                                var apNew = activePortraitOf(sp);
+                                var hostP = resolveTachieHost(sp, chP, apNew);
+                                if (hostP == null)
+                                {
+                                    log("  立ち絵「" + (apNew != null ? apNew.Id : plan.PortraitId)
+                                        + "」の割り当て先YMM4キャラ「" + PortraitAssignedName(apNew)
+                                        + "」が見つからないため、次のセリフまで表示をスキップ");
+                                    log("  立ち絵切替: " + sp + " → " + ev.Name);
+                                    break;
+                                }
+                                var tachie = new TachieItem();
+                                SetProps(tachie, log,
+                                    P("CharacterName", hostP.Item1.Name), P("Frame", plan.NewStartFrame),
+                                    P("Layer", L(laneOf("chara:" + sp))), P("Length", plan.NewLength),
+                                    P("Remark", "立ち絵: " + hostP.Item1.Name + "(" + plan.PortraitId + ")"));
+                                TrySetInstance(tachie, "Character", hostP.Item1.Model!, log);
+                                if (SetTachieParameter(tachie, hostP.Item1.Model!, log))
+                                {
+                                    if (hostP.Item2 && apNew?.Psd != null)
+                                        OverrideTachieFilePath(tachie,
+                                            ResolvePackPath(packDir, apNew.Psd.Path), log);
+                                    var slotIdxP = slotOf(sp);
+                                    var newPortrait = ResolvePortrait(packDir, charaP, apNew, null);
+                                    if (newPortrait != null)
+                                        ApplyPortraitLayout(tachie, newPortrait, xOf(sp, slotIdxP), projH,
+                                            heightRatioOf(sp), log, yOffsetOf(sp), psdHeightOf(sp));
+                                    else
+                                    {
+                                        SetAnim(tachie, "X", xOf(sp, slotIdxP), log);
+                                        SetAnim(tachie, "Y", yOffsetOf(sp), log);
+                                    }
+                                    items.Add(tachie);
+                                    tachiePlaced.Add(sp);
+                                    tachieItems[sp] = Tuple.Create((BaseItem)tachie, ev.Start);
+                                    portraitPlacedItems.Add(tachie);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // ★プラグインの都合でYMM4を巻き込まない。置き直しに失敗しても
+                            //   切替(状態)は済んでいるので、従来どおり次のセリフで復帰できる
+                            log("  立ち絵切替の置き直しに失敗(続行): " + ex.Message);
+                        }
+                        log("  立ち絵切替: " + sp + " → " + ev.Name);
                         break;
                     }
                     case "bgm_stop":
@@ -920,7 +1063,7 @@ namespace KakiniwaYmm4Import
             // セリフの尺は推定(charsPerSecond)なので、実ボイス長とズレて「間延び/被り」が出る。
             // 配置後の実尺でセリフを詰め直す(YMM4の ResolveAllItemsCollision は重なりを散らすだけで
             // 隙間を詰めない)。実尺が未確定で再配置を見送ったときだけ、従来の衝突解決を保険で呼ぶ。
-            if (!ResequenceByVoiceLength(timeline, fps, pack.Timing.SerifGap, log, intendedLayer, propItems, propExplicitEnd, preExisting, voicePause))
+            if (!ResequenceByVoiceLength(timeline, fps, pack.Timing.SerifGap, log, intendedLayer, propItems, propExplicitEnd, preExisting, voicePause, portraitEndSync))
             {
                 try
                 {
@@ -1025,6 +1168,127 @@ namespace KakiniwaYmm4Import
             catch { /* 案内表示の失敗は取り込み結果に影響させない */ }
         }
 
+        // ---------- 純アルゴリズム(YMM4 非依存・テスト対象) ----------
+
+        /// <summary>小物のレーン割り当て(区間グラフの貪欲彩色)。sortedIdx は開始時刻昇順の
+        /// イベント index 列。時間が重ならない小物は空いた最小スロットへ畳む。
+        /// 返り値: index → スロット番号。</summary>
+        internal static Dictionary<int, int> AssignGreedySlots(
+            List<int> sortedIdx, Func<int, double> startOf, Func<int, double> endOf)
+        {
+            var propSlot = new Dictionary<int, int>();
+            var laneEnds = new List<double>(); // 各スロットが空く時刻
+            foreach (var i in sortedIdx)
+            {
+                var start = startOf(i);
+                var slot = -1;
+                for (var s = 0; s < laneEnds.Count; s++)
+                    if (laneEnds[s] <= start + 1e-6) { slot = s; break; } // このスロットは空いている
+                if (slot < 0) { slot = laneEnds.Count; laneEnds.Add(0); }
+                laneEnds[slot] = endOf(i);
+                propSlot[i] = slot;
+            }
+            return propSlot;
+        }
+
+        /// <summary>再配置の階段関数: 旧Frame f のズレ量(f 以下で最大の旧Frameを持つボイスの delta)。
+        /// shifts は (旧Frame, delta) を旧Frame昇順に並べたもの。該当なし(区間の前)は 0。</summary>
+        internal static int ShiftDeltaAt(List<Tuple<int, int>> shifts, int f)
+        {
+            var d = 0; foreach (var s in shifts) { if (s.Item1 <= f) d = s.Item2; else break; } return d;
+        }
+
+        /// <summary>立ち絵名の解決(id 優先・Ymm4Name は古い書き庭パックの保険)。無ければ null。</summary>
+        internal static PackPortrait? FindPortrait(Dictionary<string, PackPortrait> portraits, string name)
+        {
+            PackPortrait? pr;
+            if (portraits.TryGetValue(name, out pr)) return pr;
+            foreach (var kv in portraits)
+                if (kv.Value.Ymm4Name == name) return kv.Value;
+            return null;
+        }
+
+        /// <summary>アクティブ立ち絵の配置先判定(純ロジック部)。Ymm4Name が空でなければ
+        /// その名前(=そのYMM4キャラで置く。PSD上書きはしない)、空なら null
+        /// (=基底キャラ+OverrideTachieFilePath でPSD差し替えの従来動作)。</summary>
+        internal static string? PortraitAssignedName(PackPortrait? portrait)
+        {
+            var n = portrait != null ? portrait.Ymm4Name : null;
+            return string.IsNullOrEmpty(n) ? null : n;
+        }
+
+        /// <summary>YMM4登録キャラ一覧から名前一致(Model 必須)を引く。無ければ null。</summary>
+        internal static CharacterChoice? FindYmm4CharacterByName(List<CharacterChoice> chars, string name)
+            => chars.FirstOrDefault(c => c.Name == name && c.Model != null);
+
+        /// <summary>立ち絵の配置キャラ決定(純ロジック部)。優先順: 明示選択(ダイアログの
+        /// 立ち絵行)→ パックの Ymm4Name → 基底キャラ。基底と同名の指定は「基底+PSD差し替え」
+        /// (従来動作)へ畳む。返り値: Item1=別キャラ名(null=基底キャラで置く),
+        /// Item2=OverrideTachieFilePath でPSD上書きしてよいか。
+        /// ボイス・立ち絵・表情アイテムすべてこの決定に従う(話者もこのキャラで生成しないと
+        /// 表情アイテム・口パクの対応が切れる)。</summary>
+        internal static Tuple<string?, bool> DecideTachieHostName(
+            string? explicitName, string? assignedName, string baseName)
+        {
+            var name = !string.IsNullOrEmpty(explicitName) ? explicitName : assignedName;
+            if (string.IsNullOrEmpty(name) || name == baseName)
+                return Tuple.Create((string?)null, true); // 基底キャラ+PSD差し替え(従来)
+            return Tuple.Create((string?)name, false);    // 別YMM4キャラで置く(上書きなし)
+        }
+
+        /// <summary>portrait(立ち絵切替)イベントの適用計画。</summary>
+        internal sealed class PortraitSwitchPlan
+        {
+            /// <summary>解決済みの立ち絵 id(activePortrait に入れる正規キー)</summary>
+            public string PortraitId = "";
+            /// <summary>表示中の立ち絵があり、切断+置き直しをするか</summary>
+            public bool Replace;
+            /// <summary>切断する既存アイテムの新 Length(フレーム)。Replace=false なら 0</summary>
+            public int CutLength;
+            /// <summary>置き直すアイテムの開始フレーム(frameOffset 込み)</summary>
+            public int NewStartFrame;
+            /// <summary>置き直すアイテムの暫定 Length(末尾まで。次のイベントが切る前提)</summary>
+            public int NewLength;
+        }
+
+        /// <summary>portrait イベントの純ロジック部: 名前解決と切断/置き直しのフレーム計算。
+        /// 解決できない name は null(状態もアイテムも触らない=既定PSDへの無駄な切断を防ぐ)。
+        /// placedStartSec=null は「そのキャラの立ち絵が画面に無い」= 状態更新のみ(Replace=false)。</summary>
+        internal static PortraitSwitchPlan? PlanPortraitSwitch(
+            Dictionary<string, PackPortrait> portraits, string name,
+            double? placedStartSec, double evStartSec, double totalEndSec,
+            double fps, int frameOffset)
+        {
+            var pr = FindPortrait(portraits, name);
+            if (pr == null) return null;
+            Func<double, int> F = sec => (int)Math.Round(sec * fps);
+            var plan = new PortraitSwitchPlan
+            {
+                PortraitId = pr.Id,
+                Replace = placedStartSec != null,
+                NewStartFrame = F(evStartSec) + frameOffset,
+                NewLength = Math.Max(1, F(totalEndSec - evStartSec)),
+            };
+            if (placedStartSec != null)
+                plan.CutLength = Math.Max(1, F(evStartSec - placedStartSec.Value));
+            return plan;
+        }
+
+        /// <summary>実尺再配置での「portrait で切られた立ち絵」の終端合わせ。
+        /// 切断はセリフの終了時刻(推定)で行われるが、シフトの階段はボイス開始フレームでしか
+        /// 変わらないため、再配置後も終端が推定尺のまま残る。対応するボイス(同キャラ・同開始)の
+        /// 実終端(voiceNewFrame + voiceLen)に合わせた新 Length を返す。
+        /// null = 合わせない(対応ボイスなし・実尺未確定・退化した1フレーム項目・逆転)。</summary>
+        internal static int? PortraitCutTachieNewLength(
+            int itemNewFrame, int itemLen, int? voiceNewFrame, int voiceLen)
+        {
+            if (voiceNewFrame == null) return null;   // 対応ボイスなし
+            if (voiceLen <= 1) return null;           // 実尺未確定(音声合成待ち)
+            if (itemLen <= 1) return null;            // 戻しと次の切替が同時刻のときの1フレーム残骸は触らない
+            var newLen = voiceNewFrame.Value + voiceLen - itemNewFrame;
+            return newLen >= 1 ? newLen : (int?)null;
+        }
+
         // ---------- 立ち絵の自動レイアウト ----------
 
         /// <summary>立ち絵をフィット(高さ比指定)+横位置指定+下端揃え(+縦オフセット)にする。
@@ -1100,7 +1364,8 @@ namespace KakiniwaYmm4Import
             IDictionary<object, int> intendedLayer = null,
             List<object> propItems = null, HashSet<object> propExplicitEnd = null,
             HashSet<object> preExisting = null,
-            IDictionary<object, double> voicePause = null)
+            IDictionary<object, double> voicePause = null,
+            IDictionary<object, int> portraitEndSync = null)
         {
             try
             {
@@ -1157,8 +1422,8 @@ namespace KakiniwaYmm4Import
                     cursor += Math.Max(1, v.len) + pauseFrames + gap;
                 }
 
-                // 旧Frame f のズレ量(f 以下で最大の旧Frameを持つボイスの delta)。位置と長さの写像に使う。
-                int DeltaAt(int f) { var d = 0; foreach (var s in shifts) { if (s.Item1 <= f) d = s.Item2; else break; } return d; }
+                // 旧Frame f のズレ量。位置と長さの写像に使う(本体は ShiftDeltaAt に抽出済み)。
+                int DeltaAt(int f) => ShiftDeltaAt(shifts, f);
 
                 var voiceSet = new HashSet<object>(voices.Select(v => v.item));
                 var others = 0;
@@ -1205,6 +1470,29 @@ namespace KakiniwaYmm4Import
                     {
                         SetProps(it, log, P("Length", vlen));
                         faceSynced++;
+                    }
+                }
+
+                // portrait で切られた立ち絵の終端合わせ: 切断はセリフの「終了時刻(推定)」で行われて
+                // いるが、shifts の階段はボイス開始フレームでしか変わらないため、上の伸縮では終端が
+                // 推定尺のまま残る。対応するボイス(同キャラ・同旧開始フレーム=アンカー)の実終端
+                // (Frame+実Length)に合わせ直す。
+                var portraitSynced = 0;
+                if (portraitEndSync != null && portraitEndSync.Count > 0)
+                {
+                    foreach (var kv in portraitEndSync)
+                    {
+                        var it = kv.Key;
+                        if (!all.Contains(it)) continue;
+                        var lp2 = FindProp(it.GetType(), "Length");
+                        if (lp2 == null || !lp2.CanWrite) continue;
+                        var nm2 = GetPropValue(it, "CharacterName") as string ?? "";
+                        var vMatch = voices.FirstOrDefault(v => v.frame == kv.Value
+                            && (GetPropValue(v.item, "CharacterName") as string ?? "") == nm2);
+                        var newLen = PortraitCutTachieNewLength(FrameOf(it), LenOf(it),
+                            vMatch != null ? (int?)FrameOf(vMatch.item) : null,
+                            vMatch != null ? LenOf(vMatch.item) : 0);
+                        if (newLen != null) { SetProps(it, log, P("Length", newLen.Value)); portraitSynced++; }
                     }
                 }
 
@@ -1299,7 +1587,8 @@ namespace KakiniwaYmm4Import
 
                 log("実尺で再配置: ボイス " + voices.Count + "件(移動 " + moved + ")・他 " + others
                     + "件移動/" + stretched + "件伸縮/" + clamped + "件終端打切/" + laneClamped + "件レーン内打切/"
-                    + swapClamped + "件入替打切・表情実尺 " + faceSynced + "件・レーン集約 " + relaned + "件・gap " + gap + "f");
+                    + swapClamped + "件入替打切・表情実尺 " + faceSynced + "件・立ち絵切替終端 " + portraitSynced
+                    + "件・レーン集約 " + relaned + "件・gap " + gap + "f");
                 return true;
             }
             catch (Exception ex) { log("再配置失敗(据え置き): " + ex.Message); return false; }

@@ -158,6 +158,15 @@ namespace KakiniwaYmm4Import.Tests
             Assert.Null(R(dir, null));
             Assert.Null(R(dir, ""));
         }
+
+        [Fact]
+        public void パック内の相対パスには拡張子制限がない()
+        {
+            // 仕様固定: 拡張子の許可リスト(AbsAllowedExts)が効くのは絶対パス参照のみ。
+            // パック内(packDir 配下に封じ込め済み)は信頼境界の内側なので、.txt のような
+            // 素材外の拡張子でも相対パスなら解決される。これを絞る変更は仕様変更として扱う。
+            Assert.Equal(Path.GetFullPath(Path.Combine(dir, "secret.txt")), R(dir, "secret.txt"));
+        }
     }
 
     // ---------- SE 実尺のヘッダ直読み(WAV / MP3 / OGG) ----------
@@ -250,6 +259,78 @@ namespace KakiniwaYmm4Import.Tests
             ms.Write(head); ms.Write(tailPage);
             var p = Write("a.ogg", ms.ToArray());
             Assert.Equal(2.0, Importer.AudioDurationSeconds(p)!.Value, 3);
+        }
+
+        [Fact]
+        public void MP3のXingヘッダがあれば総フレーム数から正確な尺()
+        {
+            // MPEG1 Layer3 44.1kHz のフレームヘッダ + "Xing"(オフセット36)。
+            // frames=1000 → 1000 * 1152 / 44100 = 26.122448…秒(手計算)。
+            // CBR 推定なら 16000*8/128000=1.0 秒になるので、Xing 経路を通った事実と区別できる。
+            var bytes = new byte[16000];
+            bytes[0] = 0xFF; bytes[1] = 0xFB; bytes[2] = 0x90; bytes[3] = 0x00;
+            Encoding.ASCII.GetBytes("Xing").CopyTo(bytes, 36);
+            bytes[43] = 1; // flags(ビッグエンディアン)の最下位ビット=フレーム数あり
+            // 総フレーム数 1000(ビッグエンディアン)
+            bytes[44] = 0; bytes[45] = 0; bytes[46] = 0x03; bytes[47] = 0xE8;
+            var p = Write("vbr.mp3", bytes);
+            Assert.Equal(26.122, Importer.AudioDurationSeconds(p)!.Value, 3);
+        }
+
+        [Fact]
+        public void OGGのVorbisはヘッダのレートとgranuleから尺()
+        {
+            // 先頭ページ: OggS + "\x01vorbis" 識別ヘッダ(rate はヘッダ内 LE)
+            var head = new byte[128];
+            Encoding.ASCII.GetBytes("OggS").CopyTo(head, 0);
+            head[28] = 0x01;
+            Encoding.ASCII.GetBytes("vorbis").CopyTo(head, 29); // vi = 29
+            // vi+11..14 = 40..43: サンプルレート 44100 LE
+            Le32(44100).CopyTo(head, 40);
+            // 最終ページ: granule 88200 → 88200 / 44100 = 2.0 秒(手計算)
+            var tailPage = new byte[32];
+            Encoding.ASCII.GetBytes("OggS").CopyTo(tailPage, 0);
+            Le32(88200).CopyTo(tailPage, 6);
+            var ms = new MemoryStream();
+            ms.Write(head); ms.Write(tailPage);
+            var p = Write("v.ogg", ms.ToArray());
+            Assert.Equal(2.0, Importer.AudioDurationSeconds(p)!.Value, 3);
+        }
+
+        [Fact]
+        public void Opus拡張子のファイルもOGGとして読める()
+        {
+            var head = new byte[128];
+            Encoding.ASCII.GetBytes("OggS").CopyTo(head, 0);
+            Encoding.ASCII.GetBytes("OpusHead").CopyTo(head, 28);
+            // granule 144000 → 144000 / 48000 = 3.0 秒(手計算)
+            var tailPage = new byte[32];
+            Encoding.ASCII.GetBytes("OggS").CopyTo(tailPage, 0);
+            Le32(144000).CopyTo(tailPage, 6);
+            var ms = new MemoryStream();
+            ms.Write(head); ms.Write(tailPage);
+            var p = Write("a.opus", ms.ToArray());
+            Assert.Equal(3.0, Importer.AudioDurationSeconds(p)!.Value, 3);
+        }
+
+        [Fact]
+        public void WAVの奇数サイズチャンクはパディング込みでスキップされる()
+        {
+            // data の前に奇数サイズ(3バイト)の LIST チャンクを置く。RIFF 規約では
+            // 奇数サイズのチャンク本体の後に 1 バイトのパディングが入る。パディングを
+            // スキップしない実装だと以降のチャンク境界が 1 バイトずれて読めなくなる。
+            var ms = new MemoryStream();
+            void W(byte[] b) => ms.Write(b, 0, b.Length);
+            W(Encoding.ASCII.GetBytes("RIFF")); W(Le32(0)); W(Encoding.ASCII.GetBytes("WAVE"));
+            W(Encoding.ASCII.GetBytes("LIST")); W(Le32(3)); W(new byte[] { 1, 2, 3, 0 }); // 3+パディング1
+            W(Encoding.ASCII.GetBytes("fmt ")); W(Le32(16));
+            W(new byte[] { 1, 0, 1, 0 });
+            W(Le32(8000));
+            W(Le32(16000)); // 平均バイトレート
+            W(new byte[] { 2, 0, 16, 0 });
+            W(Encoding.ASCII.GetBytes("data")); W(Le32(48000)); // 48000 / 16000 = 3.0 秒(手計算)
+            var p = Write("pad.wav", ms.ToArray());
+            Assert.Equal(3.0, Importer.AudioDurationSeconds(p)!.Value, 3);
         }
 
         [Fact]
@@ -388,6 +469,234 @@ namespace KakiniwaYmm4Import.Tests
         }
     }
 
+    // ---------- 立ち絵の実ファイル解決(ResolvePortrait) ----------
+    //
+    // ★優先順位(①現立ち絵の該当表情 → ②現立ち絵自体のPSD → ③キャラ直下のflat表情)は
+    //   再発バグの核心: 順序が逆だと立ち絵を切り替えたのに切替前のPSDを黙って返し、
+    //   別の顔で描かれる(2026-08-08 メタ監査)。ここが未テストだと順序の入れ替えが
+    //   全緑のまま通る(2026-08-09 監査第4弾で追加)。
+
+    public class ResolvePortraitTests : IDisposable
+    {
+        readonly string dir;
+        public ResolvePortraitTests()
+        {
+            dir = Path.Combine(Path.GetTempPath(), "kakiniwa-portrait-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dir, "chars"));
+            foreach (var f in new[] { "p1-smile.psd", "p1-base.psd", "flat-normal.psd", "byfile.psd" })
+                File.WriteAllBytes(Path.Combine(dir, "chars", f), new byte[] { 1 });
+        }
+        public void Dispose() { try { Directory.Delete(dir, true); } catch { } }
+
+        string? R(PackCharacter? c, PackPortrait? p, string? expression)
+            => (string?)Priv.Call("ResolvePortrait", dir, c, p, expression);
+
+        string Abs(string name) => Path.GetFullPath(Path.Combine(dir, "chars", name));
+
+        static PackPsd Psd(string name) => new PackPsd { Path = "chars/" + name };
+
+        /// <summary>①〜③がすべて埋まったキャラ(どれが選ばれたかはファイル名で区別できる)</summary>
+        static PackCharacter Chara() => new PackCharacter
+        {
+            Id = "a",
+            Expressions = new List<PackExpression>
+            {
+                new PackExpression { Id = "normal", Default = true, Psd = Psd("flat-normal.psd") },
+            },
+        };
+
+        static PackPortrait Portrait(bool withExpressions = true) => new PackPortrait
+        {
+            Id = "p1",
+            Psd = Psd("p1-base.psd"),
+            Expressions = withExpressions
+                ? new List<PackExpression>
+                  {
+                      new PackExpression { Id = "smile", Label = "にっこり", Psd = Psd("p1-smile.psd") },
+                  }
+                : new List<PackExpression>(),
+        };
+
+        [Fact]
+        public void 現立ち絵の該当表情が最優先で選ばれる()
+            => Assert.Equal(Abs("p1-smile.psd"), R(Chara(), Portrait(), "smile"));
+
+        [Fact]
+        public void 表情はLabelでも引ける()
+            => Assert.Equal(Abs("p1-smile.psd"), R(Chara(), Portrait(), "にっこり"));
+
+        [Fact]
+        public void 表情名が立ち絵に無ければ立ち絵自体のPSDがflatより先()
+        {
+            // flat側(chara.Expressions)にも normal がある状態で、立ち絵に無い表情を指定。
+            // ②より③が先に見られる変異だと flat-normal.psd(=切替前の顔)が返ってしまう。
+            Assert.Equal(Abs("p1-base.psd"), R(Chara(), Portrait(), "normal"));
+        }
+
+        [Fact]
+        public void 表情の指定なしでも現立ち絵が優先される()
+        {
+            // 立ち絵が表情を持たなければ、既定表情(flat)ではなく立ち絵のPSDで描く
+            Assert.Equal(Abs("p1-base.psd"), R(Chara(), Portrait(withExpressions: false), null));
+        }
+
+        [Fact]
+        public void 表情の指定なしなら立ち絵の既定表情()
+        {
+            var p = Portrait();
+            p.Expressions[0].Default = true;
+            Assert.Equal(Abs("p1-smile.psd"), R(Chara(), p, null));
+        }
+
+        [Fact]
+        public void 立ち絵なしの従来キャラはflat表情から()
+        {
+            Assert.Equal(Abs("flat-normal.psd"), R(Chara(), null, "normal"));
+            Assert.Equal(Abs("flat-normal.psd"), R(Chara(), null, null)); // 既定表情
+        }
+
+        [Fact]
+        public void PortraitDirとFileの組でも解決できる()
+        {
+            var c = new PackCharacter
+            {
+                Id = "a",
+                PortraitDir = "chars",
+                Expressions = new List<PackExpression>
+                {
+                    new PackExpression { Id = "normal", Default = true, File = "byfile.psd" },
+                },
+            };
+            Assert.Equal(Abs("byfile.psd"), R(c, null, null));
+        }
+
+        [Fact]
+        public void キャラなしはnull() => Assert.Null(R(null, Portrait(), "smile"));
+
+        [Fact]
+        public void 実ファイルが無ければnull()
+        {
+            var c = Chara();
+            c.Expressions[0].Psd = Psd("nai.psd");
+            Assert.Null(R(c, null, null));
+        }
+
+        [Fact]
+        public void パック外へ脱出するパスはnull()
+        {
+            // rel はパック由来=攻撃者制御しうる。ResolveInPack の封じ込めを通ること
+            var outside = Path.Combine(Path.GetTempPath(),
+                "kakiniwa-portrait-outside-" + Guid.NewGuid().ToString("N") + ".psd");
+            File.WriteAllBytes(outside, new byte[] { 1 });
+            try
+            {
+                var c = Chara();
+                c.Expressions[0].Psd = new PackPsd { Path = "../" + Path.GetFileName(outside) };
+                Assert.Null(R(c, null, null));
+            }
+            finally { File.Delete(outside); }
+        }
+    }
+
+    // ---------- 素材参照の解決とスキップ案内(ResolveAsset) ----------
+
+    public class ResolveAssetTests : IDisposable
+    {
+        readonly string dir;
+        public ResolveAssetTests()
+        {
+            dir = Path.Combine(Path.GetTempPath(), "kakiniwa-asset-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dir, "assets"));
+            File.WriteAllBytes(Path.Combine(dir, "assets", "a.png"), new byte[] { 1 });
+        }
+        public void Dispose() { try { Directory.Delete(dir, true); } catch { } }
+
+        static (string?, List<string>) Run(string packDir, PackAssetRef? asset, int no)
+        {
+            var skipped = new List<string>();
+            var r = (string?)Priv.Call("ResolveAsset", packDir, asset, skipped, new PackEvent { No = no });
+            return (r, skipped);
+        }
+
+        [Fact]
+        public void assetがnullならnullで書き庭側の案内が積まれる()
+        {
+            var (r, skipped) = Run(dir, null, 7);
+            Assert.Null(r);
+            var msg = Assert.Single(skipped);
+            Assert.Contains("書き庭側で見つかりませんでした", msg);
+            Assert.Contains("no.7", msg);
+            Assert.Contains("(名前なし)", msg);
+        }
+
+        [Fact]
+        public void Pathがnullなら素材名入りの書き庭側案内()
+        {
+            var (r, skipped) = Run(dir, new PackAssetRef { Name = "雨のBGM", Path = null }, 12);
+            Assert.Null(r);
+            var msg = Assert.Single(skipped);
+            Assert.Contains("書き庭側で見つかりませんでした", msg);
+            Assert.Contains("no.12", msg);
+            Assert.Contains("雨のBGM", msg);
+        }
+
+        [Fact]
+        public void パック外脱出のPathはnullでファイル側の案内()
+        {
+            var (r, skipped) = Run(dir, new PackAssetRef { Name = "x", Path = "../evil.png" }, 3);
+            Assert.Null(r);
+            var msg = Assert.Single(skipped);
+            Assert.Contains("素材ファイルが見つかりません", msg);
+            Assert.Contains("no.3", msg);
+        }
+
+        [Fact]
+        public void 存在しないファイルもファイル側の案内()
+        {
+            var (r, skipped) = Run(dir, new PackAssetRef { Name = "x", Path = "assets/nai.png" }, 5);
+            Assert.Null(r);
+            var msg = Assert.Single(skipped);
+            Assert.Contains("素材ファイルが見つかりません", msg);
+            Assert.Contains("no.5", msg);
+        }
+
+        [Fact]
+        public void 正常解決なら絶対パスでskippedは空()
+        {
+            var (r, skipped) = Run(dir, new PackAssetRef { Name = "a", Path = "assets/a.png" }, 1);
+            Assert.Equal(Path.GetFullPath(Path.Combine(dir, "assets", "a.png")), r);
+            Assert.Empty(skipped);
+        }
+    }
+
+    // ---------- レイヤーパス一覧の逆変換(ConvertPathsToSlash) ----------
+
+    public class ConvertPathsToSlashTests
+    {
+        static List<string> C(object? listObj) => (List<string>)Priv.Call("ConvertPathsToSlash", listObj)!;
+
+        [Fact]
+        public void nullや文字列以外の要素はスキップされる()
+        {
+            var src = new List<object?> { null, 123, "", "\u001C体\u001D0\u001C顔\u001D0" };
+            Assert.Equal(new[] { "体/顔" }, C(src));
+        }
+
+        [Fact]
+        public void Ymm4実形式はスラッシュ区切りへ変換し形式外はそのまま()
+        {
+            var src = new[] { "\u001Ca\u001D0\u001Cb\u001D0\u001Cc\u001D0", "ただの名前" };
+            Assert.Equal(new[] { "a/b/c", "ただの名前" }, C(src));
+        }
+
+        [Fact]
+        public void 列挙できない引数は空リスト()
+        {
+            Assert.Empty(C(null));
+            Assert.Empty(C(42));
+        }
+    }
+
     // ---------- timeline.json のパース・バリデーション(LoadPack) ----------
 
     public class LoadPackTests : IDisposable
@@ -521,5 +830,312 @@ namespace KakiniwaYmm4Import.Tests
             Assert.NotNull(p);
             Assert.Equal(7, p!.Events[0].No);
         }
+    }
+
+    // ---------- 小物レーンの貪欲彩色(AssignGreedySlots) ----------
+
+    public class AssignGreedySlotsTests
+    {
+        // intervals[i] = (start, end)。index列は 0..n-1 を開始時刻昇順で渡す(実装の前提と同じ)
+        static System.Collections.Generic.Dictionary<int, int> Slots(
+            params (double start, double end)[] intervals)
+        {
+            var idx = System.Linq.Enumerable.Range(0, intervals.Length).ToList();
+            System.Func<int, double> startOf = i => intervals[i].start;
+            System.Func<int, double> endOf = i => intervals[i].end;
+            return (System.Collections.Generic.Dictionary<int, int>)
+                Priv.Call("AssignGreedySlots", idx, startOf, endOf)!;
+        }
+
+        [Fact]
+        public void 三つ重なると別レーン_離れた四つ目は最小レーン再利用()
+        {
+            // (0,10)(1,10)(2,10) は互いに重なる → レーン 0,1,2
+            // (12,20) は全部の後 → 空いた最小レーン 0 を再利用
+            var s = Slots((0, 10), (1, 10), (2, 10), (12, 20));
+            Assert.Equal(0, s[0]);
+            Assert.Equal(1, s[1]);
+            Assert.Equal(2, s[2]);
+            Assert.Equal(0, s[3]);
+        }
+
+        [Fact]
+        public void 入れ替わり_背中合わせは同一レーン()
+        {
+            // 前の終了時刻ちょうどに次が始まる(退場→登場)は同じレーンに畳む
+            var s = Slots((0, 5), (5, 10));
+            Assert.Equal(0, s[0]);
+            Assert.Equal(0, s[1]);
+        }
+
+        [Fact]
+        public void 空いた最小のレーンを選ぶ()
+        {
+            // (0,10) → 0, (0,3) → 1, (4,10): レーン1だけ空いている(0 は 10 まで塞がる)→ 1
+            var s = Slots((0, 10), (0, 3), (4, 10));
+            Assert.Equal(0, s[0]);
+            Assert.Equal(1, s[1]);
+            Assert.Equal(1, s[2]);
+        }
+
+        [Fact]
+        public void 重なりが一瞬でもあれば別レーン()
+        {
+            // (0,5.5) と (5,10) は 0.5 秒重なる → 別レーン
+            var s = Slots((0, 5.5), (5, 10));
+            Assert.Equal(0, s[0]);
+            Assert.Equal(1, s[1]);
+        }
+    }
+
+    // ---------- 再配置の階段関数(ShiftDeltaAt) ----------
+
+    public class ShiftDeltaAtTests
+    {
+        static int Delta(System.Collections.Generic.List<System.Tuple<int, int>> shifts, int f)
+            => (int)Priv.Call("ShiftDeltaAt", shifts, f)!;
+
+        static readonly System.Collections.Generic.List<System.Tuple<int, int>> 階段 =
+            new System.Collections.Generic.List<System.Tuple<int, int>>
+            {
+                System.Tuple.Create(100, -5),
+                System.Tuple.Create(200, 3),
+            };
+
+        [Fact]
+        public void 区間の前は0()
+        {
+            Assert.Equal(0, Delta(階段, 0));
+            Assert.Equal(0, Delta(階段, 99));
+        }
+
+        [Fact]
+        public void 境界ちょうどからその区間のシフトが効く()
+        {
+            Assert.Equal(-5, Delta(階段, 100));
+            Assert.Equal(-5, Delta(階段, 150));
+            Assert.Equal(-5, Delta(階段, 199));
+        }
+
+        [Fact]
+        public void 後段以降は後段の累積シフト()
+        {
+            Assert.Equal(3, Delta(階段, 200));
+            Assert.Equal(3, Delta(階段, 100000));
+        }
+
+        [Fact]
+        public void 空の階段は常に0()
+        {
+            Assert.Equal(0, Delta(new System.Collections.Generic.List<System.Tuple<int, int>>(), 42));
+        }
+    }
+
+    // ---------- 行内立ち絵の切替計画(FindPortrait / PlanPortraitSwitch) ----------
+    //
+    // ★portrait イベントは「切替(セリフ開始)→serif→戻し(セリフ終了)」の順で届く契約。
+    //   切替時にキャラが画面に居れば、既存アイテムの切断+新しい立ち絵の即置き直しを計画する。
+    //   未登録の立ち絵名は null=何もしない(既定PSDフォールバックでの無駄な切断を防ぐ)。
+
+    public class PortraitSwitchPlanTests
+    {
+        static Dictionary<string, PackPortrait> Map() => new()
+        {
+            ["p1"] = new PackPortrait { Id = "p1" },
+            ["p2"] = new PackPortrait { Id = "p2", Ymm4Name = "ゆっくり霊夢" },
+        };
+
+        [Fact]
+        public void FindPortraitはIdで引ける()
+            => Assert.Equal("p1", Importer.FindPortrait(Map(), "p1")!.Id);
+
+        [Fact]
+        public void FindPortraitはYmm4Nameの保険でも引ける()
+            => Assert.Equal("p2", Importer.FindPortrait(Map(), "ゆっくり霊夢")!.Id);
+
+        [Fact]
+        public void FindPortraitは未登録名でnull()
+            => Assert.Null(Importer.FindPortrait(Map(), "nai"));
+
+        [Fact]
+        public void 表示中なら切断と置き直しを計画する()
+        {
+            // fps=30: placed=1.0s, 切替=2.5s, 末尾=10.0s(手計算の固定値)
+            var plan = Importer.PlanPortraitSwitch(Map(), "p2", 1.0, 2.5, 10.0, 30, 0);
+            Assert.NotNull(plan);
+            Assert.Equal("p2", plan!.PortraitId); // 正規idに解決(Ymm4Name名で来ても同じ)
+            Assert.True(plan.Replace);
+            Assert.Equal(45, plan.CutLength);      // (2.5-1.0)*30
+            Assert.Equal(75, plan.NewStartFrame);  // 2.5*30
+            Assert.Equal(225, plan.NewLength);     // (10.0-2.5)*30
+        }
+
+        [Fact]
+        public void Ymm4Name表記でも正規idへ解決される()
+        {
+            var plan = Importer.PlanPortraitSwitch(Map(), "ゆっくり霊夢", null, 0.0, 5.0, 30, 0);
+            Assert.Equal("p2", plan!.PortraitId);
+        }
+
+        [Fact]
+        public void frameOffsetは開始フレームにだけ効く()
+        {
+            var plan = Importer.PlanPortraitSwitch(Map(), "p1", 1.0, 2.5, 10.0, 30, 100);
+            Assert.Equal(175, plan!.NewStartFrame); // 75 + 100
+            Assert.Equal(45, plan.CutLength);       // 長さはオフセット無関係
+            Assert.Equal(225, plan.NewLength);
+        }
+
+        [Fact]
+        public void 未登場なら状態更新のみで置き直さない()
+        {
+            var plan = Importer.PlanPortraitSwitch(Map(), "p1", null, 2.5, 10.0, 30, 0);
+            Assert.NotNull(plan);
+            Assert.False(plan!.Replace);
+            Assert.Equal(0, plan.CutLength);
+        }
+
+        [Fact]
+        public void 未登録名はnullで何も計画しない()
+            => Assert.Null(Importer.PlanPortraitSwitch(Map(), "nai", 1.0, 2.5, 10.0, 30, 0));
+
+        [Fact]
+        public void 同時刻の切断や末尾ちょうどでも最低1フレーム()
+        {
+            var plan = Importer.PlanPortraitSwitch(Map(), "p1", 2.5, 2.5, 2.5, 30, 0);
+            Assert.Equal(1, plan!.CutLength);
+            Assert.Equal(1, plan.NewLength);
+        }
+    }
+
+    // ---------- 立ち絵の配置先キャラ判定(PortraitAssignedName / FindYmm4CharacterByName) ----------
+    //
+    // ★別YMM4キャラに割り当てた立ち絵(Ymm4Name あり)へ OverrideTachieFilePath でPSDを
+    //   強制上書きすると、立ち絵タイプ不一致でYMM4ごと落ちる(実機クラッシュ 2026-08-09)。
+    //   Ymm4Name の有無で「別キャラで置く/基底キャラ+PSD差し替え(従来)」を分岐する。
+
+    public class PortraitAssignedNameTests
+    {
+        [Fact]
+        public void null立ち絵は従来動作のnull()
+            => Assert.Null(Importer.PortraitAssignedName(null));
+
+        [Fact]
+        public void Ymm4Name未指定は従来動作のnull()
+        {
+            Assert.Null(Importer.PortraitAssignedName(new PackPortrait { Id = "p1" }));
+            Assert.Null(Importer.PortraitAssignedName(new PackPortrait { Id = "p1", Ymm4Name = "" }));
+        }
+
+        [Fact]
+        public void Ymm4Name指定ありはその名前を返す()
+            => Assert.Equal("ゆっくり霊夢", Importer.PortraitAssignedName(
+                new PackPortrait { Id = "p2", Ymm4Name = "ゆっくり霊夢" }));
+    }
+
+    public class FindYmm4CharacterByNameTests
+    {
+        static System.Collections.Generic.List<CharacterChoice> Chars() => new()
+        {
+            new CharacterChoice { Display = "霊夢", Name = "霊夢", Model = new object() },
+            new CharacterChoice { Display = "魔理沙", Name = "魔理沙", Model = null }, // Model 無し
+        };
+
+        [Fact]
+        public void 名前一致かつModelありなら返す()
+        {
+            var c = Importer.FindYmm4CharacterByName(Chars(), "霊夢");
+            Assert.NotNull(c);
+            Assert.Equal("霊夢", c!.Name);
+        }
+
+        [Fact]
+        public void Modelが無いキャラは一致してもnull()
+            => Assert.Null(Importer.FindYmm4CharacterByName(Chars(), "魔理沙"));
+
+        [Fact]
+        public void 未登録名はnull()
+            => Assert.Null(Importer.FindYmm4CharacterByName(Chars(), "妖夢"));
+    }
+
+    // ---------- 配置キャラの決定(DecideTachieHostName) ----------
+    //
+    // ★ボイス・立ち絵・表情アイテムはすべてこの決定に従う。音声話者も同じキャラで
+    //   生成しないと、表情アイテム・口パクの CharacterName 対応が切れる(追加指示 2026-08-09)。
+
+    public class DecideTachieHostNameTests
+    {
+        static (string?, bool) D(string? explicitName, string? assigned, string baseName)
+        {
+            var t = Importer.DecideTachieHostName(explicitName, assigned, baseName);
+            return (t.Item1, t.Item2);
+        }
+
+        [Fact]
+        public void 指定なしは基底キャラでPSD差し替え可()
+            => Assert.Equal((null, true), D(null, null, "霊夢"));
+
+        [Fact]
+        public void Ymm4Name指定は別キャラで上書き不可()
+            => Assert.Equal(("魔理沙", false), D(null, "魔理沙", "霊夢"));
+
+        [Fact]
+        public void 明示選択はYmm4Nameより優先()
+            => Assert.Equal(("妖夢", false), D("妖夢", "魔理沙", "霊夢"));
+
+        [Fact]
+        public void 基底と同名の指定は従来の差し替えに畳む()
+        {
+            Assert.Equal((null, true), D("霊夢", null, "霊夢"));       // 明示選択が基底と同じ
+            Assert.Equal((null, true), D(null, "霊夢", "霊夢"));       // Ymm4Name が基底と同じ
+            Assert.Equal((null, true), D("霊夢", "魔理沙", "霊夢"));   // 明示選択が優先して基底へ
+        }
+
+        [Fact]
+        public void 空文字は未指定扱い()
+            => Assert.Equal((null, true), D("", "", "霊夢"));
+    }
+
+    // ---------- 実尺再配置での「portraitで切られた立ち絵」の終端合わせ ----------
+    //
+    // ★戻しイベントはセリフの「終了時刻(推定)」で切るが、シフトの階段はボイス開始フレーム
+    //   でしか変わらないため、再配置後も終端が推定尺のまま残る。対応ボイスの実終端に合わせる。
+
+    public class PortraitCutTachieNewLengthTests
+    {
+        [Fact]
+        public void 対応ボイスの実終端に合わせる()
+        {
+            // 立ち絵: newFrame=75, 推定Length=60(推定終端135)。
+            // ボイス: newFrame=75, 実Length=90 → 実終端 165 → 新Length 90(手計算)
+            Assert.Equal(90, Importer.PortraitCutTachieNewLength(75, 60, 75, 90));
+        }
+
+        [Fact]
+        public void 立ち絵がボイスより前から出ていても終端で合わせる()
+        {
+            // 立ち絵 newFrame=60・ボイス実終端 75+90=165 → 新Length 105(手計算)
+            Assert.Equal(105, Importer.PortraitCutTachieNewLength(60, 75, 75, 90));
+        }
+
+        [Fact]
+        public void 対応ボイスが無ければ触らない()
+            => Assert.Null(Importer.PortraitCutTachieNewLength(75, 60, null, 90));
+
+        [Fact]
+        public void ボイス実尺が未確定なら触らない()
+            => Assert.Null(Importer.PortraitCutTachieNewLength(75, 60, 75, 1));
+
+        [Fact]
+        public void 退化した1フレーム項目は触らない()
+        {
+            // 連続する行内切替で「戻し」と次の「切替」が同時刻のときに残る1フレーム項目。
+            // これをボイス実尺へ伸ばすと次の立ち絵と全面的に重なる。
+            Assert.Null(Importer.PortraitCutTachieNewLength(75, 1, 75, 90));
+        }
+
+        [Fact]
+        public void 終端が開始以前へ逆転するなら触らない()
+            => Assert.Null(Importer.PortraitCutTachieNewLength(200, 60, 75, 90)); // 165-200 < 1
     }
 }
