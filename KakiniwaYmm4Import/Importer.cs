@@ -501,9 +501,15 @@ namespace KakiniwaYmm4Import
                         if (path == null) break;
                         var item = MakeItem(typeof(AudioItem), ev.Template, log, () => new AudioItem());
                         // ★尺は実ファイル長(読めないときだけ従来の1秒)。1秒固定だと長い効果音が途中で切れる
+                        // ★読めなかったことを黙らない。尺を測れるのは wav/mp3/ogg/opus だけで、
+                        //   素材として通る m4a/aac/flac は必ず1秒に切られる(MediaProbe.cs)。
+                        //   無言だと「wav に変換すると直る」という説明のつかない挙動になる(2026-08-16 監査)。
+                        var seLen = AudioDurationSeconds(path);
+                        if (seLen == null)
+                            log("  SEの長さを測れないので1秒で置きます(wav/mp3/ogg/opus 以外): " + ev.Asset!.Name);
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("se"))),
-                            P("Length", F(AudioDurationSeconds(path) ?? 1.0)),
+                            P("Length", F(seLen ?? 1.0)),
                             P("Remark", "SE: " + ev.Asset!.Name));
                         items.Add(item);
                         break;
@@ -826,7 +832,7 @@ namespace KakiniwaYmm4Import
                             var item = new AudioItem();
                             SetProps(item, log,
                                 P("FilePath", sePath), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("se"))),
-                                P("Length", F(AudioDurationSeconds(sePath) ?? 1.0)), P("Remark", "SE: " + se.Name));
+                                P("Length", F(InlineSeLength(sePath, se.Name, log))), P("Remark", "SE: " + se.Name));
                             items.Add(item);
                         }
                         break;
@@ -876,7 +882,10 @@ namespace KakiniwaYmm4Import
                         var path = ResolveAsset(packDir, ev.Asset, skipped, ev);
                         if (path == null) break;
                         var ext = Path.GetExtension(path).ToLowerInvariant();
-                        var isVideo = ext == ".mp4" || ext == ".webm" || ext == ".avi" || ext == ".mov";
+                        // ★.mkv は素材の許可拡張子(PackModel.AbsAllowedExts)には入っているのに
+                        //   ここに無く、読めない画像アイテムとして置かれていた(2026-08-16 監査)。
+                        var isVideo = ext == ".mp4" || ext == ".webm" || ext == ".avi" || ext == ".mov"
+                            || ext == ".mkv";
                         var wantType = isVideo ? typeof(VideoItem) : typeof(ImageItem);
                         BaseItem item = MakeItem(wantType, ev.Template, log,
                             () => isVideo ? (BaseItem)new VideoItem() : new ImageItem());

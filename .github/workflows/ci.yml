@@ -1,0 +1,40 @@
+# 公開リポジトリ(kakiniwa-ymm4-plugin)用の CI。
+#
+# ★このファイルはモノレポでは**動きません**。GitHub がワークフローを読むのは
+#   リポジトリ直下の .github/workflows/ だけで、ここは ymm4-plugin/.github/… に
+#   あるためです。scripts/sync-plugin-oss.ps1 で公開先へ同期されると直下に来て、
+#   そこで初めて有効になります。
+#
+# ★なぜ要るか: 公開リポジトリにはテストが118件あるのに CI が無く、PR が来ても
+#   自動では何も検証されない状態でした(2026-08-17 に気づいて追加)。
+#   OSS は他人が変更を投げてくる場所なので、緑/赤が出ないと受け取る側も出す側も困ります。
+#
+# YMM4 本体は同梱できない(配布ライセンスの問題ではなく、他社製品のため)ので、
+# 型だけを真似たスタブをその場でビルドして参照させます。テストは YMM4 に触らない
+# 純ロジックだけなので、これで通ります。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # スタブのビルドと dotnet test。windows なのは、プラグイン本体が WPF(UseWPF)を
+    # 使う都合で TargetFramework が net10.0-windows のため。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: YMM4スタブのビルド(本体が無くてもテストできるようにする)
+        run: pwsh Ymm4Stubs/build-stubs.ps1
+      - name: テスト
+        run: dotnet test KakiniwaYmm4Import.Tests
+        env:
+          # スタブの出力先を YMM4 のインストール先の代わりに渡す。
+          # 値はモノレポ側の checks.yml(ymm4 ジョブ)と揃えてあります。
+          YMM4_DIR: ${{ github.workspace }}\Ymm4Stubs\dist

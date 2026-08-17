@@ -23,6 +23,17 @@ namespace KakiniwaYmm4Import
         /// ★SEの尺が常に1秒固定だと、1秒より長い効果音が途中で切れる(監査)。
         /// WAV=ヘッダから正確に、MP3=Xing/VBRIヘッダか CBR推定、OGG(Vorbis/Opus)=最終ページの
         /// granule から算出。外部ライブラリなしのヘッダ直読み。</summary>
+        /// <summary>セリフ内 [SE:…] の長さ。測れなければ1秒に倒し、そのことをログに残す。
+        /// ★測れるのは wav/mp3/ogg/opus だけ。素材として通る m4a/aac/flac は必ず1秒に
+        /// 切られるので、黙って倒すと「wav に変換すると直る」という説明のつかない挙動になる
+        /// (2026-08-16 監査)。</summary>
+        public static double InlineSeLength(string path, string name, Action<string> log)
+        {
+            var sec = AudioDurationSeconds(path);
+            if (sec == null)
+                log("  SEの長さを測れないので1秒で置きます(wav/mp3/ogg/opus 以外): " + name);
+            return sec ?? 1.0;
+        }
         public static double? AudioDurationSeconds(string path)
         {
             try

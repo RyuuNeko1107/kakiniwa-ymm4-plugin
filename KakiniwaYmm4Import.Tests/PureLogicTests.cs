@@ -1138,4 +1138,200 @@ namespace KakiniwaYmm4Import.Tests
         public void 終端が開始以前へ逆転するなら触らない()
             => Assert.Null(Importer.PortraitCutTachieNewLength(200, 60, 75, 90)); // 165-200 < 1
     }
+
+    // ---------- 書き庭(TS)との timeline.json 契約 ----------
+    //
+    // ★この境界を守っていたのは、書き庭側から C# ソースを文字列で grep するテスト
+    //   (src/features/auditBatch34.test.ts)だけだった。肝心の「フィールド名の対応」は
+    //   1つも見ていないので、TS 側で SpeakerName を改名しても、こちらで SpeakerName を
+    //   消しても、両側とも緑のまま通り、プラグインが静かにデータを落とす。
+    //
+    // 代わりに、両側が同じ1つのファイルを読む:
+    //   ymm4-plugin/fixtures/timeline.golden.json
+    //     ← 書き庭側(src/core/ymm4/packContract.test.ts)が
+    //        「実物のビルダの出力と一致するか」を見る
+    //     ← ここが「読んだ結果が正しいプロパティに入るか」を見る
+    //
+    // フィクスチャを更新するときは、必ず両方のテストを見直すこと。
+    public class 黄金のtimelineJsonTests
+    {
+        static string GoldenFile()
+        {
+            // ビルド出力(bin/…)から ymm4-plugin/fixtures を探して遡る
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null)
+            {
+                var cand = Path.Combine(dir.FullName, "fixtures", "timeline.golden.json");
+                if (File.Exists(cand)) return cand;
+                dir = dir.Parent;
+            }
+            throw new FileNotFoundException(
+                "ymm4-plugin/fixtures/timeline.golden.json が見つかりません。" +
+                "書き庭側の packContract.test.ts が生成します。");
+        }
+
+        static Pack Load()
+        {
+            // LoadPack は「パックのフォルダ」を受け取り、その中の timeline.json を読む。
+            // 黄金ファイルは名前で用途が分かるようにしてあるので、実際のパックと同じ形へ
+            // 一時フォルダに写してから読む(実運用と同じ経路を通す)。
+            var tmp = Path.Combine(Path.GetTempPath(), "kakiniwa-golden-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                File.Copy(GoldenFile(), Path.Combine(tmp, "timeline.json"));
+                var logs = new List<string>();
+                var p = Importer.LoadPack(tmp, s => logs.Add(s));
+                Assert.True(p != null, "黄金の timeline.json を読めない: " + string.Join(" / ", logs));
+                return p!;
+            }
+            finally { try { Directory.Delete(tmp, true); } catch { } }
+        }
+
+        [Fact]
+        public void 版と全体の情報が入る()
+        {
+            var p = Load();
+            Assert.Equal(1, p.Version);
+            Assert.Equal("0.2.2", p.PluginMin);          // 書き庭の PLUGIN_MIN_VERSION
+            Assert.Equal("0.3.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
+            Assert.Equal(PackSchema.PluginVersion, p.PluginLatest); // 実版と案内が一致
+            Assert.Equal("つばめ珈琲", p.Title);
+            Assert.Equal("朝のつばめ", p.Episode);
+            Assert.Equal("書き庭", p.Generator!.Name);
+        }
+
+        [Fact]
+        public void 尺の見積り設定が入る()
+        {
+            var t = Load().Timing;
+            Assert.Equal(6, t.CharsPerSecond);
+            Assert.Equal(0.2, t.SerifGap);
+            Assert.Equal(1, t.StageSeconds);
+        }
+
+        [Fact]
+        public void キャラと複数立ち絵が入る()
+        {
+            var sora = Load().Characters.First(c => c.Id == "sora");
+            Assert.Equal("ソラ", sora.Name);
+            Assert.Equal("つばめソラ", sora.Ymm4Name);
+            Assert.Equal("assets/portraits/sora", sora.PortraitDir);
+            Assert.NotNull(sora.Portraits);
+            Assert.Equal(2, sora.Portraits!.Count);
+
+            var 制服 = sora.Portraits.First(x => x.Id == "制服");
+            Assert.True(制服.Default);
+            Assert.Equal("assets/portraits/sora/制服.psd", 制服.Psd!.Path);
+            var 私服 = sora.Portraits.First(x => x.Id == "私服");
+            Assert.False(私服.Default);
+            Assert.Equal("つばめソラ私服", 私服.Ymm4Name); // 立ち絵ごとのYMM4キャラ割り当て
+        }
+
+        [Fact]
+        public void 表情のレイヤーIDが入る()
+        {
+            var sora = Load().Characters.First(c => c.Id == "sora");
+            var 制服 = sora.Portraits!.First(x => x.Id == "制服");
+            var ドヤ = 制服.Expressions.First(e => e.Id == "ドヤ");
+            Assert.Equal(new[] { "キャラクター", "キャラクター/!口/*にやにや" }, ドヤ.Psd!.Layers);
+            // 書き庭が書き出し時にPSDを読んで付ける(これが無いと表情を切り替えられない)
+            Assert.Equal(new[] { 1, 7 }, ドヤ.Psd.LayerIds);
+        }
+
+        [Fact]
+        public void 声設定が参考情報として入る()
+        {
+            var sora = Load().Characters.First(c => c.Id == "sora");
+            Assert.Equal("voicevox", sora.Voice!.Engine);
+            Assert.Equal("3", sora.Voice.Preset);
+            Assert.Equal(1.1, sora.Voice.Params!["speedScale"]);
+        }
+
+        [Fact]
+        public void セリフの各項目が入る()
+        {
+            var p = Load();
+            var serif = p.Events.First(e => e.Type == "serif");
+            Assert.Equal("朝のつばめ", serif.Scene);
+            Assert.Equal("sora", serif.Speaker);
+            Assert.Equal("ソラ", serif.SpeakerName);
+            Assert.Equal("ドヤ", serif.Expression);
+            Assert.Contains("いらっしゃい", serif.Text);
+            // [間:0.5] は seconds(見積り)とは別に届く。プラグインはボイス実尺で並べ直すので、
+            // ここが落ちると台本で指定した溜めが YMM4 では詰まる
+            Assert.Equal(0.5, serif.Pause);
+        }
+
+        [Fact]
+        public void SEが名前と場所つきで入る()
+        {
+            var se = Load().Events.First(e => e.Se.Count > 0).Se[0];
+            Assert.Equal("ドンッ", se.Name);
+            Assert.Equal("assets/se/ドンッ.wav", se.Path);
+        }
+
+        [Fact]
+        public void 配置の座標とPSD実寸が入る()
+        {
+            var layout = Load().Events.First(e => e.Type == "layout");
+            var sora = layout.Positions!.First(q => q.Speaker == "sora");
+            Assert.Equal(-28, sora.X);
+            // 書き庭が渡すPSDの実寸(px)。これが無いと拡大率をこちらで計算できない
+            Assert.Equal(4080, sora.PsdHeight);
+            var hina = layout.Positions.First(q => q.Speaker == "hina");
+            Assert.Equal(10, hina.Y);
+            Assert.Equal(80, hina.Height);
+        }
+
+        [Fact]
+        public void 退場の印が入る()
+        {
+            var p = Load();
+            var 退場 = p.Events.Where(e => e.Type == "layout")
+                .SelectMany(e => e.Positions ?? new List<PackPosition>())
+                .FirstOrDefault(q => q.Exit);
+            Assert.True(退場 != null, "@配置 ソラ:退場 が exit として届いていない");
+        }
+
+        [Fact]
+        public void 素材つきの演出が入る()
+        {
+            var p = Load();
+            var prop = p.Events.First(e => e.Type == "prop");
+            Assert.Equal("カップ", prop.Asset!.Name);
+            Assert.Equal("assets/backgrounds/カップ.png", prop.Asset.Path);
+            Assert.Equal(-40, prop.X);
+            Assert.Equal(18, prop.Y);
+            Assert.Equal(18, prop.Height);
+        }
+
+        [Fact]
+        public void 立ち絵切替とカスタム演出が名前つきで入る()
+        {
+            var p = Load();
+            var portrait = p.Events.First(e => e.Type == "portrait");
+            Assert.Equal("sora", portrait.Speaker);
+            Assert.Equal("私服", portrait.Name);
+            var custom = p.Events.First(e => e.Type == "custom");
+            Assert.Equal("カメラ", custom.Name);
+        }
+
+        [Fact]
+        public void 契約で扱う型がひととおり届く()
+        {
+            var types = Load().Events.Select(e => e.Type).ToHashSet();
+            // ★14種すべて。以前は12種しか書いておらず、se と window_stop が漏れていた
+            //   (一覧の正は TS 側 src/core/ymm4/intermediate.ts の PACK_EVENT_TYPES)。
+            //   Importer.Run の switch は起動中 YMM4 依存でテストできないので、
+            //   case "se" を消しても赤くなるのはここだけ=この一覧が実質唯一のアンカー。
+            //   TS 側は型から導く形に直したのに、C# 側は手書きのまま残っていた(2026-08-16 監査)。
+            foreach (var t in new[] { "serif", "stage", "bg", "bgm", "bgm_stop", "se", "custom",
+                                      "layout", "window", "window_stop", "prop", "prop_stop",
+                                      "effect", "portrait" })
+            {
+                Assert.True(types.Contains(t), $"黄金の timeline.json に {t} が届いていない");
+            }
+        }
+    }
 }

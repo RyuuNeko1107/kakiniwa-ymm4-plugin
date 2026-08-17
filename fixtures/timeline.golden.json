@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "generator": {
+    "name": "書き庭",
+    "version": "contract-test"
+  },
+  "pluginMin": "0.2.2",
+  "pluginLatest": "0.3.0",
+  "title": "つばめ珈琲",
+  "episode": "朝のつばめ",
+  "timing": {
+    "charsPerSecond": 6,
+    "serifGap": 0.2,
+    "stageSeconds": 1
+  },
+  "characters": [
+    {
+      "id": "sora",
+      "name": "ソラ",
+      "ymm4Name": "つばめソラ",
+      "portraitDir": "assets/portraits/sora",
+      "expressions": [
+        {
+          "id": "ドヤ",
+          "label": null,
+          "default": false,
+          "file": null,
+          "psd": {
+            "path": "assets/portraits/sora/制服.psd",
+            "layers": [
+              "キャラクター",
+              "キャラクター/!口/*にやにや"
+            ],
+            "layerIds": [
+              1,
+              7
+            ]
+          }
+        }
+      ],
+      "portraits": [
+        {
+          "id": "制服",
+          "default": true,
+          "ymm4Name": null,
+          "psd": {
+            "path": "assets/portraits/sora/制服.psd",
+            "layers": []
+          },
+          "file": null,
+          "expressions": [
+            {
+              "id": "ドヤ",
+              "label": null,
+              "default": false,
+              "file": null,
+              "psd": {
+                "path": "assets/portraits/sora/制服.psd",
+                "layers": [
+                  "キャラクター",
+                  "キャラクター/!口/*にやにや"
+                ],
+                "layerIds": [
+                  1,
+                  7
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "私服",
+          "default": false,
+          "ymm4Name": "つばめソラ私服",
+          "psd": {
+            "path": "assets/portraits/sora/私服.psd",
+            "layers": []
+          },
+          "file": null,
+          "expressions": []
+        }
+      ],
+      "voice": {
+        "engine": "voicevox",
+        "preset": "3",
+        "params": {
+          "speedScale": 1.1
+        }
+      }
+    },
+    {
+      "id": "hina",
+      "name": "ヒナ",
+      "ymm4Name": null,
+      "portraitDir": null,
+      "expressions": []
+    }
+  ],
+  "events": [
+    {
+      "no": 1,
+      "scene": "朝のつばめ",
+      "type": "bg",
+      "start": 0,
+      "seconds": 0,
+      "asset": {
+        "name": "つばめ珈琲",
+        "path": "assets/backgrounds/つばめ珈琲.png"
+      }
+    },
+    {
+      "no": 2,
+      "scene": "朝のつばめ",
+      "type": "bgm",
+      "start": 0,
+      "seconds": 0,
+      "asset": {
+        "name": "夜想",
+        "path": "assets/bgm/夜想.wav"
+      }
+    },
+    {
+      "no": 3,
+      "scene": "朝のつばめ",
+      "type": "window",
+      "start": 0,
+      "seconds": 0,
+      "asset": {
+        "name": "ノベル枠",
+        "path": "assets/backgrounds/ノベル枠.png"
+      }
+    },
+    {
+      "no": 4,
+      "scene": "朝のつばめ",
+      "type": "prop",
+      "start": 0,
+      "seconds": 0,
+      "asset": {
+        "name": "カップ",
+        "path": "assets/backgrounds/カップ.png"
+      },
+      "x": -40,
+      "y": 18,
+      "height": 18
+    },
+    {
+      "no": 5,
+      "scene": "朝のつばめ",
+      "type": "layout",
+      "start": 0,
+      "seconds": 0,
+      "positions": [
+        {
+          "speaker": "sora",
+          "x": -28,
+          "height": 85,
+          "psdHeight": 4080
+        },
+        {
+          "speaker": "hina",
+          "x": 28,
+          "y": 10,
+          "height": 80
+        }
+      ]
+    },
+    {
+      "no": 6,
+      "scene": "朝のつばめ",
+      "type": "serif",
+      "start": 0,
+      "seconds": 3.3,
+      "pause": 0.5,
+      "speaker": "sora",
+      "speakerName": "ソラ",
+      "expression": "ドヤ",
+      "text": "いらっしゃい。 今日は冷えるね。",
+      "reading": null,
+      "se": []
+    },
+    {
+      "no": 7,
+      "scene": "朝のつばめ",
+      "type": "portrait",
+      "start": 3.5,
+      "seconds": 0,
+      "speaker": "sora",
+      "speakerName": "ソラ",
+      "name": "私服"
+    },
+    {
+      "no": 8,
+      "scene": "朝のつばめ",
+      "type": "serif",
+      "start": 3.5,
+      "seconds": 1.2,
+      "pause": 0,
+      "speaker": "sora",
+      "speakerName": "ソラ",
+      "expression": null,
+      "text": "着替えてきた。",
+      "reading": null,
+      "se": []
+    },
+    {
+      "no": 9,
+      "scene": "朝のつばめ",
+      "type": "layout",
+      "start": 4.9,
+      "seconds": 0,
+      "positions": [
+        {
+          "speaker": "sora",
+          "x": 0,
+          "height": 85,
+          "exit": true,
+          "psdHeight": 2000
+        }
+      ]
+    },
+    {
+      "no": 10,
+      "scene": "朝のつばめ",
+      "type": "stage",
+      "start": 4.9,
+      "seconds": 1,
+      "text": "ヒナ、カウンターへ"
+    },
+    {
+      "no": 11,
+      "scene": "朝のつばめ",
+      "type": "effect",
+      "start": 4.9,
+      "seconds": 0,
+      "asset": {
+        "name": "集中線",
+        "path": null
+      },
+      "x": 10,
+      "y": -5,
+      "height": 80
+    },
+    {
+      "no": 12,
+      "scene": "朝のつばめ",
+      "type": "serif",
+      "start": 4.9,
+      "seconds": 1.5,
+      "pause": 0,
+      "speaker": "hina",
+      "speakerName": "ヒナ",
+      "expression": null,
+      "text": "よう！ 来たぜ。",
+      "reading": null,
+      "se": [
+        {
+          "name": "ドンッ",
+          "path": "assets/se/ドンッ.wav"
+        }
+      ]
+    },
+    {
+      "no": 13,
+      "scene": "朝のつばめ",
+      "type": "se",
+      "start": 6.6,
+      "seconds": 0,
+      "asset": {
+        "name": "ドンッ",
+        "path": "assets/se/ドンッ.wav"
+      }
+    },
+    {
+      "no": 14,
+      "scene": "朝のつばめ",
+      "type": "window_stop",
+      "start": 6.6,
+      "seconds": 0
+    },
+    {
+      "no": 15,
+      "scene": "朝のつばめ",
+      "type": "prop_stop",
+      "start": 6.6,
+      "seconds": 0,
+      "name": "カップ"
+    },
+    {
+      "no": 16,
+      "scene": "朝のつばめ",
+      "type": "bgm_stop",
+      "start": 6.6,
+      "seconds": 0
+    },
+    {
+      "no": 17,
+      "scene": "朝のつばめ",
+      "type": "custom",
+      "start": 6.6,
+      "seconds": 0,
+      "name": "カメラ",
+      "arg": "引き"
+    }
+  ]
+}
