@@ -1,0 +1,67 @@
+name: 不具合の報告
+description: 取り込みがうまくいかない・落ちる・配置がおかしい
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        このプラグインは YMM4 本体の非公開 API をリフレクションで使っているため、
+        **YMM4 の版によって動きが変わります**。版とログが無いと再現できないことが多いので、
+        お手数ですが添えてください。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 何が起きましたか
+      description: 期待した動きと、実際の動きを書いてください
+      placeholder: |
+        例: 立ち絵は置かれたが、ボイスが1つも生成されなかった
+    validations:
+      required: true
+
+  - type: input
+    id: ymm4
+    attributes:
+      label: YMM4 のバージョン
+      description: YMM4 の「ヘルプ → バージョン情報」で確認できます
+      placeholder: 例: v4.55.1
+    validations:
+      required: true
+
+  - type: input
+    id: plugin
+    attributes:
+      label: プラグインのバージョン
+      description: YMM4 のツールメニューに「書き庭の台本を取り込む(β版 vX.Y.Z)」と出ます
+      placeholder: 例: v0.3.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 取り込みダイアログのログ
+      description: |
+        ダイアログ下部のログ欄をまるごと貼ってください。
+        どこまで進んで何で止まったかが、ここに出ています。
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: pack
+    attributes:
+      label: 受け渡しパックの timeline.json(任意)
+      description: |
+        差し支えなければ添付してください。配置の問題は、入力が分かると再現が早くなります。
+        **台本の本文が入っています**ので、見られたくない場合は貼らなくて構いません
+        (その場合は、起きた場面の前後だけでも助かります)。
+      render: json
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: 確認
+      options:
+        - label: 書き庭の最新版で書き出したパックで試しました
+        - label: YMM4 のプロジェクトを保存してから取り込みました(壊れても戻せる状態)

@@ -429,7 +429,24 @@ namespace KakiniwaYmm4Import
             }
             catch (Exception ex)
             {
+                // ★ログ欄に1行出すだけでは気づけない。ここは取り込み中ずっとメッセージが
+                //   流れる欄なので、末尾に「例外: …」が増えても利用者は成功したと思って
+                //   閉じてしまう。しかも**半端に配置されたアイテムはタイムラインに残る**。
+                //   利用者のプロジェクトを書き換えている以上、失敗ははっきり伝える。
                 Log("例外: " + ex);
+                try
+                {
+                    System.Windows.MessageBox.Show(
+                        "取り込みの途中で失敗しました。\n\n"
+                        + "タイムラインには途中まで配置されたアイテムが残っています。"
+                        + "Ctrl+Z で戻すか、プロジェクトを保存せずに開き直してください。\n\n"
+                        + "詳しい内容はダイアログ下部のログに出ています。\n\n"
+                        + ex.Message,
+                        "書き庭の台本を取り込む",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+                catch { /* 通知の失敗で二重に落ちない */ }
             }
         }
     }

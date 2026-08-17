@@ -30,6 +30,12 @@ BGM・SE・立ち位置を、書き庭が書き出す「YMM4受け渡しパッ�
      声で生成されます(「上と同じ」を選べば、立ち絵の差し替えだけになります)
 4. 割り当てや配置先は `user/setting/kakiniwa-import.json` に記憶され、次回から引き継がれます
 
+## 手を入れたい方へ
+
+ビルド・テストのしかた、コードの地図(`Importer.Run()` の段取り)、気をつけることは
+[CONTRIBUTING.md](CONTRIBUTING.md) にまとめてあります。**YMM4 を持っていなくても
+テストは動かせます。**
+
 ## ソースからビルドする(開発者向け)
 
 ソースは `KakiniwaYmm4Import/` 配下に責務ごとに分かれています(XAML不使用・UIはコード構築):
@@ -74,7 +80,8 @@ dotnet test KakiniwaYmm4Import.Tests
 スタブは**テスト専用**です。実際に動くプラグインを作るには本物の YMM4 が要ります
 (`$env:YMM4_DIR` を YMM4 のインストール先に戻してください)。
 
-配布用 `.ymme` の作成は `pwsh -File package-ymme.ps1 -Version <版数>` です。
+配布用 `.ymme` の作成は `pwsh -File package-ymme.ps1` です(版数はソースの
+`PluginVersion` から読みます。`-Version` を明示した場合は、ソースと一致しないと止まります)。
 
 ## 互換性についての注意
 

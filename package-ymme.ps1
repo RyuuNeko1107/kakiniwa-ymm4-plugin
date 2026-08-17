@@ -1,6 +1,9 @@
 # 配布用 .ymme の作成(BOOTH アップロード用)。先に build-plugin.ps1 でビルドしておくこと。
 # .ymme = 「親フォルダ名=プラグインフォルダ名」の ZIP を拡張子変更したもの(YMM4 のインストーラーが展開する)。
-param([string]$Version = "0.1.0")
+# -Version は**省略推奨**。指定できる値はソースの PluginVersion ただ一つ(違えば下で
+# 止まる)なので、既定では読み取って使う。以前は既定が "0.1.0" 固定で、引数なしだと
+# 必ず失敗する状態だった(版を上げるたびに既定が置き去りになる)。
+param([string]$Version = "")
 $ErrorActionPreference = "Stop"
 # YMM4 の場所。環境変数 YMM4_DIR があればそれを使い、無ければ既定の候補を順に探す。
 # ★作者のPCのパスを直書きしていると、他の人はここで詰まる(2026-08-08 監査)。
@@ -23,10 +26,12 @@ $newestSrc = (Get-ChildItem "$srcDir\*.cs" | Sort-Object LastWriteTime -Descendi
 if ($newestSrc -and $newestSrc.LastWriteTime -gt (Get-Item $dll).LastWriteTime) {
   throw "ソース($($newestSrc.Name))が DLL より新しい=ビルド忘れです。先に build-plugin.ps1 を実行してください"
 }
-# ★版の突き合わせ: -Version とソースの PluginVersion がずれると README だけ別の版になる
+# ★版の正はソースの PluginVersion。-Version を明示したときだけ突き合わせる
+#   (ずれたまま進むと、中身と README・ファイル名が別の版になる)。
 $csVer = (Select-String -Path (Join-Path $srcDir "*.cs") -Pattern 'PluginVersion = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
 if (-not $csVer) { throw "ソースに PluginVersion が見つかりません" }
-if ($csVer -ne $Version) {
+if (-not $Version) { $Version = $csVer }
+elseif ($csVer -ne $Version) {
   throw "指定の -Version $Version がソースの PluginVersion $csVer と一致しません"
 }
 
