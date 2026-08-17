@@ -1,0 +1,30 @@
+# エディタの既定。既存コードの書き方に合わせてある(推測ではなく実測: タブは0個、
+# 字下げは4スペース刻み)。貢献者のエディタが勝手に別の流儀へ整形して、
+# 中身と無関係な差分で PR が読めなくなるのを防ぐのが目的。
+#
+# ★ここに無い規則(命名・並び順・空行の入れ方)は縛らない。既存コードにも揺れがあり、
+#   全部を機械で揃えようとすると、直したい箇所と無関係な差分が大量に混ざる。
+
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+# 改行は .gitattributes 側で決めている(index は LF)。ここでは指定しない。
+
+[*.{json,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.ps1]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown は行末2スペースが改行の意味を持つので、勝手に削らせない
+trim_trailing_whitespace = false
