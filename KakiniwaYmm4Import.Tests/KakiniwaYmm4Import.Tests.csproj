@@ -2,7 +2,7 @@
 
   <!-- プラグイン本体(KakiniwaYmm4Import)の純ロジックの単体テスト。
        本体の csproj・配布物には一切影響しない(ソースをリンク参照で取り込むだけ)。
-       実行: <dotnet> test ymm4-plugin/KakiniwaYmm4Import.Tests
+       実行: <dotnet> test KakiniwaYmm4Import.Tests(書き庭のモノレポでは ymm4-plugin/ を頭に付ける)
        YMM4 の場所は環境変数 YMM4_DIR で上書き可(build-plugin.ps1 と同じ流儀)。 -->
 
   <PropertyGroup>

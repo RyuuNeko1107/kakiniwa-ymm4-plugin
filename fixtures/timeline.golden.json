@@ -5,7 +5,7 @@
     "version": "contract-test"
   },
   "pluginMin": "0.2.2",
-  "pluginLatest": "0.3.0",
+  "pluginLatest": "0.4.0",
   "title": "つばめ珈琲",
   "episode": "朝のつばめ",
   "timing": {
@@ -206,8 +206,22 @@
     {
       "no": 9,
       "scene": "朝のつばめ",
-      "type": "layout",
+      "type": "serif",
       "start": 4.9,
+      "seconds": 1.2,
+      "pause": 0,
+      "speaker": "sora",
+      "speakerName": "ソラ",
+      "expression": null,
+      "text": "二行で\n見せる。",
+      "reading": "二行で見せる。",
+      "se": []
+    },
+    {
+      "no": 10,
+      "scene": "朝のつばめ",
+      "type": "layout",
+      "start": 6.3,
       "seconds": 0,
       "positions": [
         {
@@ -220,18 +234,18 @@
       ]
     },
     {
-      "no": 10,
+      "no": 11,
       "scene": "朝のつばめ",
       "type": "stage",
-      "start": 4.9,
+      "start": 6.3,
       "seconds": 1,
       "text": "ヒナ、カウンターへ"
     },
     {
-      "no": 11,
+      "no": 12,
       "scene": "朝のつばめ",
       "type": "effect",
-      "start": 4.9,
+      "start": 6.3,
       "seconds": 0,
       "asset": {
         "name": "集中線",
@@ -242,10 +256,10 @@
       "height": 80
     },
     {
-      "no": 12,
+      "no": 13,
       "scene": "朝のつばめ",
       "type": "serif",
-      "start": 4.9,
+      "start": 6.3,
       "seconds": 1.5,
       "pause": 0,
       "speaker": "hina",
@@ -261,10 +275,10 @@
       ]
     },
     {
-      "no": 13,
+      "no": 14,
       "scene": "朝のつばめ",
       "type": "se",
-      "start": 6.6,
+      "start": 8,
       "seconds": 0,
       "asset": {
         "name": "ドンッ",
@@ -272,32 +286,32 @@
       }
     },
     {
-      "no": 14,
-      "scene": "朝のつばめ",
-      "type": "window_stop",
-      "start": 6.6,
-      "seconds": 0
-    },
-    {
       "no": 15,
       "scene": "朝のつばめ",
-      "type": "prop_stop",
-      "start": 6.6,
-      "seconds": 0,
-      "name": "カップ"
+      "type": "window_stop",
+      "start": 8,
+      "seconds": 0
     },
     {
       "no": 16,
       "scene": "朝のつばめ",
-      "type": "bgm_stop",
-      "start": 6.6,
-      "seconds": 0
+      "type": "prop_stop",
+      "start": 8,
+      "seconds": 0,
+      "name": "カップ"
     },
     {
       "no": 17,
       "scene": "朝のつばめ",
+      "type": "bgm_stop",
+      "start": 8,
+      "seconds": 0
+    },
+    {
+      "no": 18,
+      "scene": "朝のつばめ",
       "type": "custom",
-      "start": 6.6,
+      "start": 8,
       "seconds": 0,
       "name": "カメラ",
       "arg": "引き"

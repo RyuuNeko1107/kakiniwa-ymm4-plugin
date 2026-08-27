@@ -87,6 +87,9 @@ namespace KakiniwaYmm4Import
         readonly TextBox logBox;
         readonly StackPanel mappingPanel;
         readonly Button placeButton;
+        readonly Button pauseButton;
+        readonly Button stopButton;
+        ImportControl? running;
         readonly TextBox baseLayerBox;
         readonly ComboBox startAtCombo;
         readonly Button registerPresetsButton;
@@ -159,7 +162,31 @@ namespace KakiniwaYmm4Import
                 IsEnabled = false,
             };
             placeButton.Click += OnPlaceClick;
-            top.Children.Add(placeButton);
+            // 配置の一時停止・停止(配置中だけ押せる)。長い台本は AddItems → ボイス生成待ち →
+            // 再配置と続くので、途中でやめる手段が要る(2026-08-27 要望)
+            pauseButton = new Button
+            {
+                Content = "一時停止",
+                Margin = new Thickness(8, 4, 0, 8),
+                Padding = new Thickness(10, 6, 10, 6),
+                IsEnabled = false,
+                ToolTip = "配置を一時停止します(もう一度押すと再開)",
+            };
+            pauseButton.Click += OnPauseClick;
+            stopButton = new Button
+            {
+                Content = "停止",
+                Margin = new Thickness(8, 4, 0, 8),
+                Padding = new Thickness(10, 6, 10, 6),
+                IsEnabled = false,
+                ToolTip = "配置をやめます。ここまで置いたアイテムはタイムラインに残ります",
+            };
+            stopButton.Click += OnStopClick;
+            var placeRow = new StackPanel { Orientation = Orientation.Horizontal };
+            placeRow.Children.Add(placeButton);
+            placeRow.Children.Add(pauseButton);
+            placeRow.Children.Add(stopButton);
+            top.Children.Add(placeRow);
 
             DockPanel.SetDock(top, Dock.Top);
             root.Children.Add(top);
@@ -401,9 +428,49 @@ namespace KakiniwaYmm4Import
             }
         }
 
+        void OnPauseClick(object sender, RoutedEventArgs e)
+        {
+            var c = running;
+            if (c == null) return;
+            if (c.IsPaused)
+            {
+                c.Resume();
+                pauseButton.Content = "一時停止";
+                Log("再開しました");
+            }
+            else
+            {
+                c.Pause();
+                pauseButton.Content = "再開";
+                Log("一時停止しました(次の区切りで止まります。「再開」で続き、「停止」でやめます)");
+            }
+        }
+
+        void OnStopClick(object sender, RoutedEventArgs e)
+        {
+            var c = running;
+            if (c == null) return;
+            c.Stop();
+            stopButton.IsEnabled = false;
+            pauseButton.IsEnabled = false;
+            Log("停止します(次の区切りで止まります)…");
+        }
+
+        /// <summary>配置中の押せる/押せないを切り替える。二重実行(配置ボタン連打)も防ぐ。</summary>
+        void SetRunning(bool on)
+        {
+            placeButton.IsEnabled = !on && pack != null;
+            pauseButton.IsEnabled = on;
+            stopButton.IsEnabled = on;
+            pauseButton.Content = "一時停止";
+        }
+
         async void OnPlaceClick(object sender, RoutedEventArgs e)
         {
-            if (pack == null) return;
+            if (pack == null || running != null) return;
+            var control = new ImportControl();
+            running = control;
+            SetRunning(true);
             try
             {
                 var map = new Dictionary<string, CharacterChoice>();
@@ -416,7 +483,7 @@ namespace KakiniwaYmm4Import
                 settings.BaseLayer = int.TryParse(baseLayerBox.Text, out parsedLayer)
                     ? Math.Max(0, parsedLayer) : 0;
                 settings.StartAt = startAtCombo.SelectedIndex == 1 ? "cursor" : "zero";
-                await Importer.Run(pack, packDir, map, settings, Log);
+                await Importer.Run(pack, packDir, map, settings, Log, control);
 
                 // 今回の割り当てを記憶(次回は最初から選択済みにする)。
                 // 「名前そのまま」(未割り当て)は記憶しない=次回また選び直せる
@@ -426,6 +493,23 @@ namespace KakiniwaYmm4Import
                     else settings.SpeakerMap.Remove(pair.Key);
                 }
                 SettingsStore.Save(settings, Log);
+            }
+            catch (ImportStoppedException ex)
+            {
+                // 利用者が自分で止めた。失敗ではないので警告にはしないが、
+                // 「途中まで置いたものが残る」ことは同じなので、そこは同じ言葉で伝える
+                Log(ex.Message);
+                try
+                {
+                    System.Windows.MessageBox.Show(
+                        "取り込みを停止しました。\n\n"
+                        + "タイムラインには途中まで配置されたアイテムが残っています。"
+                        + "残す必要が無ければ Ctrl+Z で戻すか、プロジェクトを保存せずに開き直してください。",
+                        "書き庭の台本を取り込む",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Information);
+                }
+                catch { /* 通知の失敗で二重に落ちない */ }
             }
             catch (Exception ex)
             {
@@ -447,6 +531,11 @@ namespace KakiniwaYmm4Import
                         System.Windows.MessageBoxImage.Warning);
                 }
                 catch { /* 通知の失敗で二重に落ちない */ }
+            }
+            finally
+            {
+                running = null;
+                SetRunning(false);
             }
         }
     }

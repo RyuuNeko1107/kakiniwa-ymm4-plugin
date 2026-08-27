@@ -25,7 +25,8 @@ dotnet test KakiniwaYmm4Import.Tests    # 純ロジックのテスト
 | ファイル | 役割 | 行数の目安 |
 |---|---|---|
 | `KakiniwaYmm4Import/Plugin.cs` | YMM4 のツールメニューに載る入口。設定の読み書き | 小 |
-| `KakiniwaYmm4Import/ImportUi.cs` | 取り込みダイアログ(話者割り当て・配置先・ログ表示) | 中 |
+| `KakiniwaYmm4Import/ImportUi.cs` | 取り込みダイアログ(話者割り当て・配置先・ログ表示・一時停止/停止) | 中 |
+| `KakiniwaYmm4Import/ImportControl.cs` | 配置の一時停止・停止(チェックポイント方式) | 小 |
 | `KakiniwaYmm4Import/PackModel.cs` | 受け渡しパック(timeline.json)の型・読み込み・検証 | 中 |
 | `KakiniwaYmm4Import/Importer.cs` | **配置の本体**。ここが一番大きい | 大 |
 | `KakiniwaYmm4Import/Ymm4Interop.cs` | YMM4 本体をリフレクションで扱う層 | 大 |

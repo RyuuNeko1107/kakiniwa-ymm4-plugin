@@ -216,10 +216,34 @@ namespace KakiniwaYmm4Import
             }
         }
 
-        public static async System.Threading.Tasks.Task Run(Pack pack, string packDir,
+        /// <summary>AddItems を小分けにする件数。「停止」を押したとき、まだ置いていない分を
+        /// 置かずに済ませるため(一括だと全部置かれてから止まる)。</summary>
+        public const int PlaceChunkSize = 100;
+
+        /// <summary>count 件を size ごとに [start, end) の範囲に分ける(純ロジック・テスト対象)。</summary>
+        public static List<int[]> ChunkRanges(int count, int size)
+        {
+            var ranges = new List<int[]>();
+            if (count <= 0 || size <= 0) return ranges;
+            for (var start = 0; start < count; start += size)
+                ranges.Add(new[] { start, Math.Min(count, start + size) });
+            return ranges;
+        }
+
+        public static System.Threading.Tasks.Task Run(Pack pack, string packDir,
             Dictionary<string, CharacterChoice> speakerMap,
             ImportSettings settings, Action<string> log)
         {
+            return Run(pack, packDir, speakerMap, settings, log, null);
+        }
+
+        /// <param name="control">一時停止・停止(null なら止められない従来どおり)。
+        /// 停止すると ImportStoppedException を投げて抜ける。置いた分は残る。</param>
+        public static async System.Threading.Tasks.Task Run(Pack pack, string packDir,
+            Dictionary<string, CharacterChoice> speakerMap,
+            ImportSettings settings, Action<string> log, ImportControl? control)
+        {
+            control ??= new ImportControl();
             LogYmm4VersionIfUntested(log);
             var timeline = FindActiveTimeline(log);
             if (timeline == null) return;
@@ -635,7 +659,9 @@ namespace KakiniwaYmm4Import
                             voice = r.Item2;
                             if (addedByModel)
                                 directPlacements.Add(Tuple.Create(L(laneOf("voice:" + charId)),
-                                    "VoiceItem ボイス「" + (ev.Text ?? "").Substring(0, Math.Min(10, (ev.Text ?? "").Length)) + "」"));
+                                    // 記録は1行ずつ読むもの。折り返しをそのまま出すと途中で行が割れる
+                                    "VoiceItem ボイス「" + SingleLine(ev.Text ?? "").Substring(
+                                        0, Math.Min(10, SingleLine(ev.Text ?? "").Length)) + "」"));
                         }
                         if (!addedByModel)
                         {
@@ -1044,7 +1070,20 @@ namespace KakiniwaYmm4Import
             foreach (var t in layerSummary.OrderBy(t2 => t2.Item1))
                 log("  L" + t.Item1.ToString().PadLeft(2) + ": " + t.Item2);
 
-            AddItems(timeline, items, log);
+            // ★小分けに置く。合間で一時停止・停止を見る(停止なら置いた分を残して抜ける)
+            var ranges = ChunkRanges(items.Count, PlaceChunkSize);
+            for (var ci = 0; ci < ranges.Count; ci++)
+            {
+                try { await control.CheckpointAsync("配置 " + ranges[ci][0] + "/" + items.Count + " 件まで"); }
+                catch (ImportStoppedException)
+                {
+                    log("停止: " + ranges[ci][0] + "/" + items.Count + " 件まで配置しました(残りは置いていません)");
+                    throw;
+                }
+                var chunk = items.GetRange(ranges[ci][0], ranges[ci][1] - ranges[ci][0]);
+                AddItems(timeline, chunk, log, ci == 0);
+                if (ranges.Count > 1) log("配置: " + ranges[ci][1] + "/" + items.Count + " 件");
+            }
 
             // 診断: ボイスアイテムがキャラへ解決できているか(ボイス割り当て問題の切り分け)
             var firstVoice = items.OfType<VoiceItem>().FirstOrDefault();
@@ -1067,7 +1106,8 @@ namespace KakiniwaYmm4Import
             // ボイスは AddVoiceItemAsync が非同期(バックグラウンド)で生成する。実尺が揃う前に
             // 再配置すると「据え置き」になり推定尺のまま=ボイス間に間隔が残る。生成完了(実尺確定)を
             // 待ってから再配置する。
-            await WaitForVoiceLengths(timeline, preExisting, log);
+            await WaitForVoiceLengths(timeline, preExisting, log, control);
+            await control.CheckpointAsync("再配置の前");
 
             // セリフの尺は推定(charsPerSecond)なので、実ボイス長とズレて「間延び/被り」が出る。
             // 配置後の実尺でセリフを詰め直す(YMM4の ResolveAllItemsCollision は重なりを散らすだけで
@@ -1332,7 +1372,7 @@ namespace KakiniwaYmm4Import
         /// <summary>ボイス生成(非同期)の完了を待つ。VoiceItem.Length が実尺(>1)になるまで最大約20秒ポーリング。
         /// 半数以上が確定したら抜ける(残りが遅れても再配置は安全側で据え置く)。await Task.Delay で
         /// UIスレッドを塞がず生成を進めさせる。</summary>
-        static async System.Threading.Tasks.Task WaitForVoiceLengths(Timeline timeline, HashSet<object> preExisting, Action<string> log)
+        static async System.Threading.Tasks.Task WaitForVoiceLengths(Timeline timeline, HashSet<object> preExisting, Action<string> log, ImportControl? control = null)
         {
             try
             {
@@ -1359,9 +1399,12 @@ namespace KakiniwaYmm4Import
                         return;
                     }
                     await System.Threading.Tasks.Task.Delay(200);
+                    // 一時停止・停止はここでも見る(ボイス生成待ちは最大20秒あり、待つ間に止めたい)
+                    if (control != null) await control.CheckpointAsync("ボイス生成待ち " + ready + "/" + voices.Count);
                 }
                 log("ボイス生成待ち: タイムアウト(実尺が揃わないまま続行)");
             }
+            catch (ImportStoppedException) { throw; }
             catch (Exception ex) { log("ボイス生成待ちで例外(続行): " + ex.Message); }
         }
 

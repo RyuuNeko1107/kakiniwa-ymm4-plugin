@@ -1,6 +1,7 @@
 # CI用 YMM4 スタブのビルド。4つのスタブ DLL を dist/ に出す。
-# 使い方: pwsh ymm4-plugin/Ymm4Stubs/build-stubs.ps1
-#   → その後 $env:YMM4_DIR = "<repo>/ymm4-plugin/Ymm4Stubs/dist" で dotnet test を回す。
+# 使い方(リポジトリ直下から。書き庭のモノレポでは ymm4-plugin/ を頭に付ける):
+#   pwsh Ymm4Stubs/build-stubs.ps1
+#   → その後 $env:YMM4_DIR = "<repo>/Ymm4Stubs/dist" で dotnet test を回す。
 # dotnet の場所は -Dotnet で上書き可(既定は PATH の dotnet)。
 param([string]$Dotnet = "dotnet")
 

@@ -193,8 +193,9 @@ namespace KakiniwaYmm4Import
             return all.FirstOrDefault(m => m.GetParameters().Length == paramTypes.Length);
         }
 
-        /// <summary>動作確認済みのYMM4版(この版で公開DLLの中身を実測した)</summary>
-        const string TestedYmm4 = "4.54";
+        /// <summary>動作確認済みのYMM4版(この版で公開DLLの中身を実測した)。
+        /// 4.54.0.1 で実測、4.55.1.1 で取り込み・改行の字幕を確認(2026-08-27)</summary>
+        static readonly string[] TestedYmm4 = { "4.54", "4.55" };
         static bool versionWarned;
         /// <summary>実行中のYMM4が動作確認版と違えば一度だけ注意をログに出す(致命ではない)</summary>
         public static void LogYmm4VersionIfUntested(Action<string> log)
@@ -206,8 +207,8 @@ namespace KakiniwaYmm4Import
                 var v = Application.ResourceAssembly != null ? Application.ResourceAssembly.GetName().Version : null;
                 if (v == null) return;
                 var cur = v.Major + "." + v.Minor;
-                if (cur != TestedYmm4)
-                    log("注意: このプラグインの動作確認は YMM4 v" + TestedYmm4 + "(実行中は v" + v.ToString(3)
+                if (Array.IndexOf(TestedYmm4, cur) < 0)
+                    log("注意: このプラグインの動作確認は YMM4 v" + string.Join("/", TestedYmm4) + "(実行中は v" + v.ToString(3)
                         + ")。挙動がおかしいときはプラグインの新しい版が無いか確認してください");
             }
             catch { }
@@ -881,7 +882,8 @@ namespace KakiniwaYmm4Import
         }
 
         /// <summary>Timeline.AddItems / TryAddItems をリフレクションで探して呼ぶ(シグネチャをログに残す)</summary>
-        static void AddItems(Timeline timeline, List<BaseItem> items, Action<string> log)
+        /// <param name="logCandidates">候補メソッドの一覧を出すか。小分けに呼ぶとき2回目以降は省く</param>
+        static void AddItems(Timeline timeline, List<BaseItem> items, Action<string> log, bool logCandidates = true)
         {
             if (items.Count == 0) { log("追加するアイテムがありません"); return; }
 
@@ -889,9 +891,10 @@ namespace KakiniwaYmm4Import
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(m => m.Name == "AddItems" || m.Name == "TryAddItems")
                 .ToArray();
-            foreach (var m in candidates)
-                log("候補メソッド: " + m.Name + "(" + string.Join(", ",
-                    m.GetParameters().Select(pp => pp.ParameterType.Name + " " + pp.Name)) + ")");
+            if (logCandidates)
+                foreach (var m in candidates)
+                    log("候補メソッド: " + m.Name + "(" + string.Join(", ",
+                        m.GetParameters().Select(pp => pp.ParameterType.Name + " " + pp.Name)) + ")");
 
             foreach (var m in candidates.OrderBy(m => m.Name == "AddItems" ? 0 : 1)
                                         .ThenBy(m => m.GetParameters().Length))
@@ -911,8 +914,11 @@ namespace KakiniwaYmm4Import
                 try
                 {
                     var result = m.Invoke(timeline, args);
-                    log("実行: " + m.Name + " → " + (result == null ? "完了" : result.ToString()));
-                    log("配置完了: " + items.Count + "アイテム");
+                    if (logCandidates)
+                    {
+                        log("実行: " + m.Name + " → " + (result == null ? "完了" : result.ToString()));
+                        log("配置完了: " + items.Count + "アイテム");
+                    }
                     return;
                 }
                 catch (Exception ex)

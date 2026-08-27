@@ -1194,11 +1194,68 @@ namespace KakiniwaYmm4Import.Tests
             var p = Load();
             Assert.Equal(1, p.Version);
             Assert.Equal("0.2.2", p.PluginMin);          // 書き庭の PLUGIN_MIN_VERSION
-            Assert.Equal("0.3.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
+            Assert.Equal("0.4.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
             Assert.Equal(PackSchema.PluginVersion, p.PluginLatest); // 実版と案内が一致
             Assert.Equal("つばめ珈琲", p.Title);
             Assert.Equal("朝のつばめ", p.Episode);
             Assert.Equal("書き庭", p.Generator!.Name);
+        }
+
+        // ---------- セリフの中の改行(書き庭の [改行]) ----------
+        //
+        // ★パックは LF で書かれるが、YMM4/WPF の行区切りは CRLF。LF のまま渡すと
+        //   字幕が1行のままだったり、見えない文字として残ったりする。動く環境では
+        //   気づけないので、受け入れ口でそろえていることをここで押さえる。
+
+        [Fact]
+        public void 折り返しのあるセリフを_CRLF_へそろえて読む()
+        {
+            var 折れた行 = Load().Events.First(
+                e => e.Type == "serif" && e.Text != null && e.Text.Contains("\r"));
+            // 期待値は手書きの固定リテラル(黄金ファイルの「二行で\n見せる。」に対応)
+            Assert.Equal("二行で\r\n見せる。", 折れた行.Text);
+            // LF 単独は残っていない(CRLF だけ)
+            Assert.DoesNotContain("\n", 折れた行.Text!.Replace("\r\n", ""));
+        }
+
+        [Fact]
+        public void 読み_声_には折り返しを入れない()
+        {
+            var 折れた行 = Load().Events.First(
+                e => e.Type == "serif" && e.Text != null && e.Text.Contains("\r"));
+            // 字幕は2行・声は1続き。ここが崩れると読み上げが改行を読む/詰まる
+            Assert.Equal("二行で見せる。", 折れた行.Reading);
+        }
+
+        [Fact]
+        public void 読みの無いパックでも_折れていれば読みを補う()
+        {
+            // 手編集・別ツール製のパック。書き庭は折れた行に必ず reading を入れるので
+            // 通らない道だが、通ると改行がそのまま読み上げへ渡る
+            var tmp = Path.Combine(Path.GetTempPath(), "kakiniwa-br-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                File.WriteAllText(Path.Combine(tmp, "timeline.json"),
+                    "{\"version\":1,\"events\":[{\"type\":\"serif\"," +
+                    "\"text\":\"一行目\\n二行目\"}]}");
+                var p2 = Importer.LoadPack(tmp, _ => { });
+                Assert.NotNull(p2);
+                var ev = p2!.Events[0];
+                Assert.Equal("一行目\r\n二行目", ev.Text);
+                Assert.Equal("一行目二行目", ev.Reading);
+            }
+            finally { try { Directory.Delete(tmp, true); } catch { } }
+        }
+
+        [Fact]
+        public void 折り返しの無いセリフには読みを足さない()
+        {
+            // 補いが効きすぎると、ルビも読み辞書も無い行に reading が付き、
+            // YMM4 側で Pronounce が上書きされる(発音の指定が増える)
+            var 素の行 = Load().Events.First(
+                e => e.Type == "serif" && e.Text == "着替えてきた。");
+            Assert.True(string.IsNullOrEmpty(素の行.Reading));
         }
 
         [Fact]
@@ -1334,4 +1391,64 @@ namespace KakiniwaYmm4Import.Tests
             }
         }
     }
+
+    // ---------- 配置の一時停止・停止(ImportControl / ChunkRanges) ----------
+    public class ImportControlTests
+    {
+        [Theory]
+        [InlineData(0, 100, 0)]
+        [InlineData(1, 100, 1)]
+        [InlineData(100, 100, 1)]
+        [InlineData(101, 100, 2)]
+        [InlineData(296, 100, 3)]
+        public void 件数を小分けにする範囲の数(int count, int size, int expected)
+        {
+            Assert.Equal(expected, Importer.ChunkRanges(count, size).Count);
+        }
+
+        [Fact]
+        public void 範囲は隙間なく全件を覆う()
+        {
+            var r = Importer.ChunkRanges(296, 100);
+            Assert.Equal(new[] { 0, 100 }, r[0]);
+            Assert.Equal(new[] { 100, 200 }, r[1]);
+            Assert.Equal(new[] { 200, 296 }, r[2]);
+            Assert.Empty(Importer.ChunkRanges(5, 0)); // 0 で割らない
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task 何もしなければ即通る()
+        {
+            var c = new ImportControl();
+            await c.CheckpointAsync("x");
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task 一時停止中は再開まで待ち_再開すると通る()
+        {
+            var c = new ImportControl { PollMs = 10 };
+            c.Pause();
+            var t = c.CheckpointAsync("x");
+            await System.Threading.Tasks.Task.Delay(80);
+            Assert.False(t.IsCompleted, "一時停止中なのに通った");
+            c.Resume();
+            await t; // 再開で抜ける
+            Assert.True(t.IsCompletedSuccessfully);
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task 停止すると例外で抜ける_一時停止中でも効く()
+        {
+            var c = new ImportControl { PollMs = 10 };
+            c.Pause();
+            var t = c.CheckpointAsync("配置 100/296 件まで");
+            await System.Threading.Tasks.Task.Delay(40);
+            c.Stop();
+            var ex = await Assert.ThrowsAsync<ImportStoppedException>(() => t);
+            Assert.Contains("配置 100/296", ex.Message);
+            // 以後のチェックポイントも全部止まる
+            await Assert.ThrowsAsync<ImportStoppedException>(() => c.CheckpointAsync("次"));
+        }
+    }
+
 }

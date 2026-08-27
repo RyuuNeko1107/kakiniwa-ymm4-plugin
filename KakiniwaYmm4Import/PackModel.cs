@@ -17,9 +17,9 @@ using YukkuriMovieMaker.Settings;
 
 namespace KakiniwaYmm4Import
 {
-    // ---------- timeline.json DTO(スキーマ v1: docs/ymm4-bridge.md) ----------
+    // ---------- timeline.json DTO(スキーマ v1: /docs/pack-format.md が正) ----------
 
-    /// <summary>このプラグインが解釈できる timeline.json の形式版(docs/ymm4-bridge.md)。
+    /// <summary>このプラグインが解釈できる timeline.json の形式版(/docs/pack-format.md)。
     /// 本体側で形を変えたらこの数を上げ、プラグインも配り直すこと。</summary>
     public static class PackSchema
     {
@@ -27,7 +27,7 @@ namespace KakiniwaYmm4Import
         /// <summary>このプラグイン自身の版。書き庭側は timeline.json の pluginMin に
         /// 「このパックを正しく読むのに必要な最低版」を書く。突き合わせて古ければ警告する
         /// (本体は自動更新・プラグインは別配布なので、ずれた組み合わせは必ず起きる)。</summary>
-        public const string PluginVersion = "0.3.0";
+        public const string PluginVersion = "0.4.0";
     }
 
     public class PackGenerator
@@ -131,7 +131,7 @@ namespace KakiniwaYmm4Import
         public PackAssetRef? Asset { get; set; }
         public string? Name { get; set; }
         public string? Arg { get; set; }
-        /// <summary>任意: 適用するYMM4アイテムテンプレート名(未登録なら既定で配置)。docs/ymm4-bridge.md 参照</summary>
+        /// <summary>任意: 適用するYMM4アイテムテンプレート名(未登録なら既定で配置)。/docs/pack-format.md 参照</summary>
         public string? Template { get; set; }
         /// <summary>type:"layout" のみ: 立ち位置の指定(以降のイベントに適用)</summary>
         public List<PackPosition>? Positions { get; set; }
@@ -213,6 +213,23 @@ namespace KakiniwaYmm4Import
                 // 負や逆順の時間はゼロ長へ丸める(負の Length を YMM4 に渡さない)
                 if (double.IsNaN(ev2.Start) || double.IsInfinity(ev2.Start) || ev2.Start < 0) ev2.Start = 0;
                 if (double.IsNaN(ev2.Seconds) || double.IsInfinity(ev2.Seconds) || ev2.Seconds < 0) ev2.Seconds = 0;
+                // ★セリフ本文の改行(書き庭の [改行])を、この環境の行区切り(CRLF)へそろえる。
+                //   パックは LF で書かれる(JSON の "\n")。YMM4/WPF は CRLF が行の区切りなので、
+                //   LF のまま渡すと字幕が1行のままだったり、見えない文字として残ったりする。
+                //   ★これは「動く環境では気づけない」たぐいの食い違いなので、受け入れ口で一度だけ
+                //   そろえる(各所で個別に直すと、直し漏れた経路だけが静かに壊れる)。
+                //   声に出す読みを先に用意してから本文をそろえる(順序を変えると読みに CR が残る)。
+                if (!string.IsNullOrEmpty(ev2.Text) && HasLineBreak(ev2.Text!)
+                    && string.IsNullOrEmpty(ev2.Reading))
+                {
+                    // 読みが無いのに本文が折れているパック(手編集・別ツール製)。そのまま
+                    // 読み上げに渡すと改行を読む・詰まるので、折り目を外した読みを補う。
+                    // 書き庭のパックは折れている行に必ず reading を入れるので、ここは通らない。
+                    ev2.Reading = RemoveLineBreaks(ev2.Text!);
+                }
+                if (ev2.Text != null) ev2.Text = NormalizeLineBreaks(ev2.Text);
+                // 読み(声)に改行は入らない約束。混ざっていたら落とす(読み上げに渡すため)
+                if (ev2.Reading != null) ev2.Reading = RemoveLineBreaks(ev2.Reading);
             }
             if (pack.Version < 1)
             {
@@ -258,6 +275,39 @@ namespace KakiniwaYmm4Import
                 if (na != nb) return na - nb;
             }
             return 0;
+        }
+
+        // ---------- 改行(セリフの中の [改行]) ----------
+        //
+        // 書き庭の台本は 1行=1セリフ で、セリフの中の折り返しは記法 [改行] で書く。
+        // パックにはそれが本文の改行として載ってくる(docs/pack-format.md)。
+
+        /// <summary>本文に行の折り返しが入っているか(CR・LF どちらの綴りでも)</summary>
+        static bool HasLineBreak(string s)
+        {
+            return s.IndexOf('\n') >= 0 || s.IndexOf('\r') >= 0;
+        }
+
+        /// <summary>行の折り返しを CRLF へそろえる(混在・CR単独も一様に直す)。
+        /// YMM4/WPF の行区切りは CRLF で、LF のままだと字幕が1行のままになったり
+        /// 見えない文字として残ったりする。</summary>
+        static string NormalizeLineBreaks(string s)
+        {
+            return s.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "\r\n");
+        }
+
+        /// <summary>行の折り返しを取り除く(読み上げに渡す読み・記録の1行表示用)。
+        /// 空白へ置き換えないのは、読みでは間として発音されうるため。</summary>
+        static string RemoveLineBreaks(string s)
+        {
+            return s.Replace("\r", "").Replace("\n", "");
+        }
+
+        /// <summary>記録(ログ)に1行で出すための整形。折り返しは空白へ
+        /// (取り除くと語がくっついて読めなくなる。ここは声ではなく人が読む)。</summary>
+        static string SingleLine(string s)
+        {
+            return NormalizeLineBreaks(s).Replace("\r\n", " ");
         }
 
         /// <summary>パック由来の相対パスを packDir 配下の実ファイル絶対パスへ解決する。配下でなければ null。
