@@ -51,6 +51,11 @@ $readme = @"
 うまくいかないとき: このフォルダ(KakiniwaYmm4Import)ごと、YMM4 のフォルダの
       user\plugin\ の中へコピーしてから YMM4 を再起動してください。
       (YMM4 を起動したままだと上書きできないことがあります)
+★注意: dll だけを取り出して置かないでください(user\plugin\ の直下や、
+      YMM4 本体の plugin\ に dll 単体を置く形は、YMM4 が想定している置き方ではありません)。
+      必ず「KakiniwaYmm4Import」フォルダごと user\plugin\ の中に入れます。
+YMM4 が起動しなくなったとき: 置いた dll(またはフォルダ)を消せば元に戻ります。
+      YMM4 本体の入れ直しは要りません。
 使い方: YMM4 でプロジェクトを開いて保存 → ツール →「書き庭の台本を取り込む(β版)」
 詳しく: https://kakiniwa.jp/plugin/
 "@
@@ -58,8 +63,37 @@ Set-Content -Path (Join-Path $stage "README.txt") -Value $readme -Encoding UTF8
 
 $out = Join-Path $PSScriptRoot "dist"
 New-Item -ItemType Directory -Force $out | Out-Null
-$zip = Join-Path $out "書き庭_YMM4プラグイン_$Version.zip"
-if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path $stage -DestinationPath $zip
-Copy-Item $zip (Join-Path $out "書き庭_YMM4プラグイン_$Version.ymme") -Force
-Write-Host "配布物: $out (BOOTH には .ymme をアップロード。zip は予備)"
+# ★.ymme と同じ中身の .zip は作らない。以前は両方作っていて、BOOTH に .zip の方を
+#   上げてしまい、解凍した人が dll 単体を手で置いて YMM4 が起動しなくなる報告が出た
+#   (2026-08-28)。zip で配るときも「開いたら .ymme が出てくる」形にする。
+$ymme = Join-Path $out "書き庭_YMM4プラグイン_$Version.ymme"
+if (Test-Path $ymme) { Remove-Item $ymme -Force }
+$tmpZip = Join-Path $stageRoot "plugin.zip"
+Compress-Archive -Path $stage -DestinationPath $tmpZip
+Move-Item $tmpZip $ymme -Force
+
+# 配布用 zip = .ymme + 導入のしかた.txt(zip しか受け付けない配布先向け)
+$wrap = Join-Path $stageRoot "wrap"
+New-Item -ItemType Directory -Force $wrap | Out-Null
+Copy-Item $ymme $wrap
+$howto = @"
+書き庭 台本インポート(YMM4プラグイン) v$Version の導入のしかた
+
+1. このフォルダにある「書き庭_YMM4プラグイン_$Version.ymme」をダブルクリック
+2. YMM4 のインストーラーが開くので、案内に従う
+3. YMM4 を再起動 → ツール →「書き庭の台本を取り込む(β版)」
+
+★.ymme をさらに解凍して、中の dll だけを置かないでください。
+  ダブルクリックできないときは、.ymme を YMM4 の画面へドラッグ&ドロップしてください。
+  それでも駄目なときだけ、.ymme を zip として展開し、中の「KakiniwaYmm4Import」
+  フォルダごと YMM4 の user\plugin\ の中へコピーします(dll 単体ではなくフォルダごと)。
+YMM4 が起動しなくなったとき: 置いた dll(またはフォルダ)を消せば元に戻ります。
+詳しく: https://kakiniwa.jp/plugin/
+"@
+Set-Content -Path (Join-Path $wrap "導入のしかた.txt") -Value $howto -Encoding UTF8
+$dist = Join-Path $out "書き庭_YMM4プラグイン_$Version.zip"
+if (Test-Path $dist) { Remove-Item $dist -Force }
+Compress-Archive -Path (Join-Path $wrap "*") -DestinationPath $dist
+Write-Host "配布物: $out"
+Write-Host "  .ymme … BOOTH にはこれをアップロード(ダブルクリックで導入できる形)"
+Write-Host "  .zip  … zip しか受け付けない配布先向け(開くと .ymme と 導入のしかた.txt が出る)"
