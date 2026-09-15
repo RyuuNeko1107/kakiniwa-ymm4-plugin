@@ -1239,7 +1239,7 @@ namespace KakiniwaYmm4Import.Tests
             var p = Load();
             Assert.Equal(1, p.Version);
             Assert.Equal("0.2.2", p.PluginMin);          // 書き庭の PLUGIN_MIN_VERSION
-            Assert.Equal("0.4.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
+            Assert.Equal("0.4.1", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
             Assert.Equal(PackSchema.PluginVersion, p.PluginLatest); // 実版と案内が一致
             Assert.Equal("つばめ珈琲", p.Title);
             Assert.Equal("朝のつばめ", p.Episode);
