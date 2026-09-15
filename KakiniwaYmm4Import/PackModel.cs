@@ -335,6 +335,8 @@ namespace KakiniwaYmm4Import
             if (string.IsNullOrEmpty(path)) return null;
             if (Path.IsPathRooted(path))
             {
+                // ★読取専用の許可。書き込み先の決定に使う経路は ResolveInPackForWrite を通す
+                //   (絶対パスを許すと、パック外の実在 PSD の隣にサイドカーを書ける。2026-09-02)。
                 // ★ローカルドライブ(C:\ 等)の絶対パスは許可する。「同梱しない」書き出しの
                 //   既定形がフルパス参照で、全面拒否だと既定のパックが素材ぜんぶスキップに
                 //   なっていた(2026-08-07 監査)。拒否を続けるのは:
@@ -364,6 +366,18 @@ namespace KakiniwaYmm4Import
             // 正規化後に packDir 配下か(..\ での脱出を弾く)。Windows は大小無視。
             if (!full.StartsWith(baseWithSep, StringComparison.OrdinalIgnoreCase)) return null;
             return File.Exists(full) ? full : null;
+        }
+
+        /// <summary>書き込み先を決める用途の解決。ResolveInPack と違い絶対パス(ローカル・UNC とも)を
+        /// 一切受け付けず、正規化後に packDir 配下にある相対パスだけを通す。
+        /// 読取では「同梱しない書き出し」のフルパス参照を素材拡張子付きで許しているが、書込先まで
+        /// 許すと、細工パックの psd.path が指す任意の実在 PSD の隣にサイドカー(PSD名-ymm.json)を
+        /// 上書きできてしまう(REPORT-131「書込先は入力非依存」の前提が崩れる。2026-09-02)。</summary>
+        static string? ResolveInPackForWrite(string packDir, string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            if (Path.IsPathRooted(path) || path.StartsWith(@"\\")) return null;
+            return ResolveInPack(packDir, path);
         }
 
         /// <summary>パック相対パスを実ファイルの絶対パスへ。存在しない/パック外なら null。</summary>

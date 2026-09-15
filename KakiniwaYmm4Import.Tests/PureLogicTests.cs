@@ -169,6 +169,51 @@ namespace KakiniwaYmm4Import.Tests
         }
     }
 
+    // ---------- 書き込み先の解決(ResolveInPackForWrite)は配下限定 ----------
+
+    public class ResolveInPackForWriteTests : IDisposable
+    {
+        readonly string dir;
+        public ResolveInPackForWriteTests()
+        {
+            dir = Path.Combine(Path.GetTempPath(), "kakiniwa-test-w-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dir, "portraits"));
+            File.WriteAllBytes(Path.Combine(dir, "portraits", "a.psd"), new byte[] { 1 });
+        }
+        public void Dispose() { try { Directory.Delete(dir, true); } catch { } }
+
+        static string? W(string packDir, string? path) => (string?)Priv.Call("ResolveInPackForWrite", packDir, path);
+
+        [Fact]
+        public void 絶対パスのPSDは実在してもnull()
+        {
+            // 読取用の ResolveInPack は素材拡張子付きの絶対パスを許すが、
+            // 書込先(サイドカーを隣に書く)に絶対パスを許すとパック外の PSD を狙える
+            var abs = Path.Combine(dir, "portraits", "a.psd");
+            Assert.NotNull((string?)Priv.Call("ResolveInPack", dir, abs));
+            Assert.Null(W(dir, abs));
+        }
+
+        [Fact]
+        public void 親ディレクトリ脱出はnull()
+        {
+            var outside = Path.Combine(Path.GetTempPath(), "kakiniwa-outside-w-" + Guid.NewGuid().ToString("N") + ".psd");
+            File.WriteAllBytes(outside, new byte[] { 1 });
+            try { Assert.Null(W(dir, "../" + Path.GetFileName(outside))); }
+            finally { File.Delete(outside); }
+        }
+
+        [Fact]
+        public void 配下の相対パスは解決される()
+        {
+            Assert.Equal(Path.GetFullPath(Path.Combine(dir, "portraits", "a.psd")), W(dir, "portraits/a.psd"));
+        }
+
+        [Fact]
+        public void UNCパスはnull()
+            => Assert.Null(W(dir, @"\\attacker\share\a.psd"));
+    }
+
     // ---------- SE 実尺のヘッダ直読み(WAV / MP3 / OGG) ----------
 
     public class AudioDurationTests : IDisposable

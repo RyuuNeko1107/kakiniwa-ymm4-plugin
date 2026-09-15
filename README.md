@@ -70,7 +70,7 @@ dotnet SDK がある場合は通常ビルドも使えます:
 
 ```powershell
 dotnet build KakiniwaYmm4Import
-dotnet test KakiniwaYmm4Import.Tests   # 純ロジックのテスト(131件)
+dotnet test KakiniwaYmm4Import.Tests   # 純ロジックのテスト(135件)
 ```
 
 ### YMM4 を持っていない場合(テストだけ動かす)

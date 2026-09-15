@@ -127,7 +127,14 @@ namespace KakiniwaYmm4Import
                         {
                             // 同じYMM4キャラのままPSDだけ差し替える立ち絵: パック内のそのPSDのサイドカーへ
                             var rel = p.Psd != null ? p.Psd.Path : exprsP[0].Psd!.Path;
-                            target = ResolveInPack(packDir, rel);
+                            // ★ここは解決したパスの隣にサイドカーを「書く」ので、絶対パスは受け付けない
+                            //   (パック外の実在 PSD のサイドカーを細工パックで上書きされる)。同梱PSDのみ。
+                            if (!string.IsNullOrEmpty(rel) && Path.IsPathRooted(rel))
+                            {
+                                log("  " + chara.Name + "/" + desc + ": 同梱していない PSD にはプリセットを書きません: " + rel);
+                                continue;
+                            }
+                            target = ResolveInPackForWrite(packDir, rel);
                             if (target == null || !File.Exists(target))
                             {
                                 log("  " + chara.Name + "/" + desc + ": 立ち絵PSDが見つからずスキップ");
