@@ -1496,4 +1496,23 @@ namespace KakiniwaYmm4Import.Tests
         }
     }
 
+    // ---------- ログ用の先頭切り出し ----------
+    public class FirstCharsTests
+    {
+        [Fact]
+        public void 絵文字の真ん中で切らない()
+        {
+            // 😀 は UTF-16 で2単位。先頭3単位だと 'あ' + 😀の前半になるので、前半を残さない
+            Assert.Equal("あ", (string)Priv.Call("FirstChars", "あ😀い", 2)!);
+            Assert.Equal("あ😀", (string)Priv.Call("FirstChars", "あ😀い", 3)!);
+        }
+
+        [Fact]
+        public void 短ければそのまま_ちょうどなら切らない()
+        {
+            Assert.Equal("abc", (string)Priv.Call("FirstChars", "abc", 10)!);
+            Assert.Equal("abcde", (string)Priv.Call("FirstChars", "abcdefg", 5)!);
+        }
+    }
+
 }

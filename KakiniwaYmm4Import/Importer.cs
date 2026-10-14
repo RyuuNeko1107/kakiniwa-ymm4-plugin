@@ -497,6 +497,21 @@ namespace KakiniwaYmm4Import
             // MainModel経由で直接追加したボイス(items に入らない)のレイヤー記録
             var directPlacements = new List<Tuple<int, string>>();
 
+            // セリフ行に埋めた SE(`[SE:…]`)をその行の開始位置に置く。本文のある行・空の行の両方から使う
+            Action<PackEvent> placeInlineSe = (e) =>
+            {
+                foreach (var se in e.Se)
+                {
+                    var sePath = ResolveAsset(packDir, se, skipped, e);
+                    if (sePath == null) continue;
+                    var seItem = new AudioItem();
+                    SetProps(seItem, log,
+                        P("FilePath", sePath), P("Frame", FrameAt(e.Start)), P("Layer", L(laneOf("se"))),
+                        P("Length", F(InlineSeLength(sePath, se.Name, log))), P("Remark", "SE: " + se.Name));
+                    items.Add(seItem);
+                }
+            };
+
             for (var i = 0; i < evs.Count; i++)
             {
                 var ev = evs[i];
@@ -509,7 +524,9 @@ namespace KakiniwaYmm4Import
                         var item = MakeItem(typeof(ImageItem), ev.Template, log, () => new ImageItem());
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("bg"))),
-                            P("Length", F(nextStartOfType(i, new[] { "bg" }) - ev.Start)),
+                            // ★1フレーム未満にしない。@背景 が同時刻に並ぶと次の開始が同じで Length=0 になる
+                            //   (小物・窓の退場は Math.Max(1, …) で守っているのに、ここだけ無かった)
+                            P("Length", Math.Max(1, F(nextStartOfType(i, new[] { "bg" }) - ev.Start))),
                             P("Remark", "背景: " + ev.Asset!.Name));
                         items.Add(item);
                         break;
@@ -521,7 +538,7 @@ namespace KakiniwaYmm4Import
                         var item = MakeItem(typeof(AudioItem), ev.Template, log, () => new AudioItem());
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("bgm"))),
-                            P("Length", F(nextStartOfType(i, new[] { "bgm", "bgm_stop" }) - ev.Start)),
+                            P("Length", Math.Max(1, F(nextStartOfType(i, new[] { "bgm", "bgm_stop" }) - ev.Start))),
                             P("Remark", "BGM: " + ev.Asset!.Name));
                         items.Add(item);
                         break;
@@ -622,6 +639,9 @@ namespace KakiniwaYmm4Import
                                 voicePause.TryGetValue(直前のボイス, out var 既存);
                                 voicePause[直前のボイス] = 既存 + ev.Pause;
                             }
+                            // ★SE は本文が空でも置く。「ソラ: [SE:ドンッ]」のように SE だけを運ぶ行は
+                            //   仕様(pack-format.md)で認められている。ここで break すると SE が黙って消える
+                            placeInlineSe(ev);
                             emptySerifSkipped++;
                             break;
                         }
@@ -667,8 +687,7 @@ namespace KakiniwaYmm4Import
                             if (addedByModel)
                                 directPlacements.Add(Tuple.Create(L(laneOf("voice:" + charId)),
                                     // 記録は1行ずつ読むもの。折り返しをそのまま出すと途中で行が割れる
-                                    "VoiceItem ボイス「" + SingleLine(ev.Text ?? "").Substring(
-                                        0, Math.Min(10, SingleLine(ev.Text ?? "").Length)) + "」"));
+                                    "VoiceItem ボイス「" + FirstChars(SingleLine(ev.Text ?? ""), 10) + "」"));
                         }
                         if (!addedByModel)
                         {
@@ -858,16 +877,7 @@ namespace KakiniwaYmm4Import
                             }
                         }
 
-                        foreach (var se in ev.Se)
-                        {
-                            var sePath = ResolveAsset(packDir, se, skipped, ev);
-                            if (sePath == null) continue;
-                            var item = new AudioItem();
-                            SetProps(item, log,
-                                P("FilePath", sePath), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("se"))),
-                                P("Length", F(InlineSeLength(sePath, se.Name, log))), P("Remark", "SE: " + se.Name));
-                            items.Add(item);
-                        }
+                        placeInlineSe(ev);
                         break;
                     }
                     case "window":
@@ -878,6 +888,9 @@ namespace KakiniwaYmm4Import
                         var isWindow = ev.Type == "window";
                         var stopAt = nextStopOf(i, isWindow ? "window_stop" : "prop_stop",
                             isWindow ? null : ev.Asset!.Name);
+                        // ★窓は最後の指定だけが出る(プレビューも同じ)。window_stop が無くても、次の @窓 が
+                        //   来たらそこで前の窓を終える。終えないと両方が同じレーンで重なる
+                        if (isWindow) stopAt = Math.Min(stopAt, nextStartOfType(i, new[] { "window" }));
                         var item = MakeItem(typeof(ImageItem), ev.Template, log, () => new ImageItem());
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)),
@@ -1249,6 +1262,14 @@ namespace KakiniwaYmm4Import
 
         /// <summary>再配置の階段関数: 旧Frame f のズレ量(f 以下で最大の旧Frameを持つボイスの delta)。
         /// shifts は (旧Frame, delta) を旧Frame昇順に並べたもの。該当なし(区間の前)は 0。</summary>
+        /// <summary>先頭 n 文字(UTF-16)。絵文字などのペアの真ん中で切らない(ログに孤立サロゲートを出さない)。</summary>
+        internal static string FirstChars(string s, int n)
+        {
+            if (s.Length <= n) return s;
+            if (n > 0 && char.IsHighSurrogate(s[n - 1])) n--;
+            return s.Substring(0, n);
+        }
+
         internal static int ShiftDeltaAt(List<Tuple<int, int>> shifts, int f)
         {
             var d = 0; foreach (var s in shifts) { if (s.Item1 <= f) d = s.Item2; else break; } return d;
