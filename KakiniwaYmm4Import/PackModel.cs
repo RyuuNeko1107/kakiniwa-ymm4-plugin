@@ -27,7 +27,7 @@ namespace KakiniwaYmm4Import
         /// <summary>このプラグイン自身の版。書き庭側は timeline.json の pluginMin に
         /// 「このパックを正しく読むのに必要な最低版」を書く。突き合わせて古ければ警告する
         /// (本体は自動更新・プラグインは別配布なので、ずれた組み合わせは必ず起きる)。</summary>
-        public const string PluginVersion = "0.4.1";
+        public const string PluginVersion = "0.5.0";
     }
 
     public class PackGenerator
@@ -48,6 +48,8 @@ namespace KakiniwaYmm4Import
         public string Title { get; set; } = "";
         public string Episode { get; set; } = "";
         public PackTiming Timing { get; set; } = new PackTiming();
+        /// <summary>YMM4 でのレイヤー配置の指定(任意)。窓の初期値になる。無ければ従来どおり</summary>
+        public PackLayers? Layers { get; set; }
         public List<PackCharacter> Characters { get; set; } = new List<PackCharacter>();
         public List<PackEvent> Events { get; set; } = new List<PackEvent>();
     }
@@ -176,7 +178,7 @@ namespace KakiniwaYmm4Import
             var jsonPath = Path.Combine(packDir, "timeline.json");
             if (!File.Exists(jsonPath))
             {
-                log("timeline.json がありません: " + jsonPath);
+                log(Tr.T("log.pack.noJson", jsonPath));
                 return null;
             }
             var pack = JsonSerializer.Deserialize<Pack>(
@@ -184,7 +186,7 @@ namespace KakiniwaYmm4Import
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             if (pack == null)
             {
-                log("timeline.json の解析に失敗");
+                log(Tr.T("log.pack.parseFail"));
                 return null;
             }
             // ★パックの形式版を確かめる。本体は自動更新、このプラグインは BOOTH で別配布なので、
@@ -193,10 +195,7 @@ namespace KakiniwaYmm4Import
             //   タイムラインを書き換える操作なので、中途半端に置くより手前で止める。
             if (pack.Version > PackSchema.Supported)
             {
-                log(string.Format(
-                    "このパックは新しい形式(v{0})です。このプラグインが分かるのは v{1} までです。" +
-                    "プラグインを新しいものに入れ替えてください: https://kakiniwa.jp/plugin/",
-                    pack.Version, PackSchema.Supported));
+                log(Tr.T("log.pack.newer", pack.Version, PackSchema.Supported));
                 return null;
             }
             // 明示 null(手編集・別ツール生成)で NullReferenceException の生スタックを出さない。
@@ -234,30 +233,23 @@ namespace KakiniwaYmm4Import
             if (pack.Version < 1)
             {
                 // 版が入っていない=古い書き庭で作られたか、別物の可能性。読めるだけ読む
-                log("注意: パックに形式版がありません。古い書き庭で書き出したものかもしれません。");
+                log(Tr.T("log.pack.noVersion"));
             }
-            log(string.Format("読み込みOK: {0}『{1}』 events={2} chars={3}",
-                pack.Title, pack.Episode, pack.Events.Count, pack.Characters.Count));
+            log(Tr.T("log.pack.loaded", pack.Title, pack.Episode, pack.Events.Count, pack.Characters.Count));
             // 版の突き合わせ(整合の確認が一目でできるように・実機要望 2026-08-07)
-            log(string.Format("バージョン: 書き庭 v{0} のパック(形式v{1}) / プラグイン v{2}(対応形式 v{3})",
+            log(Tr.T("log.pack.versions",
                 string.IsNullOrEmpty(pack.Generator?.Version) ? "?" : pack.Generator!.Version,
                 pack.Version, PackSchema.PluginVersion, PackSchema.Supported));
             if (!string.IsNullOrEmpty(pack.PluginMin) &&
                 CompareVersions(PackSchema.PluginVersion, pack.PluginMin!) < 0)
             {
-                log(string.Format(
-                    "⚠ このパックはプラグイン v{0} 以上を想定しています(現在 v{1})。" +
-                    "正しく読めない項目があるかもしれません。新しい版に入れ替えてください: https://kakiniwa.jp/plugin/",
-                    pack.PluginMin, PackSchema.PluginVersion));
+                log(Tr.T("log.pack.needPlugin", pack.PluginMin, PackSchema.PluginVersion));
             }
             else if (!string.IsNullOrEmpty(pack.PluginLatest) &&
                 CompareVersions(PackSchema.PluginVersion, pack.PluginLatest!) < 0)
             {
                 // 動作には支障がない(pluginMin は満たしている)ので、案内だけ一度出す
-                log(string.Format(
-                    "新しいプラグイン v{0} が配布されています(現在 v{1})。" +
-                    "入れ替えはこちら: https://kakiniwa.jp/plugin/",
-                    pack.PluginLatest, PackSchema.PluginVersion));
+                log(Tr.T("log.pack.newPlugin", pack.PluginLatest, PackSchema.PluginVersion));
             }
             return pack;
         }

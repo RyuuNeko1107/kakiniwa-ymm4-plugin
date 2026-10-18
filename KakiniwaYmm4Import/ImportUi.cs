@@ -50,8 +50,8 @@ namespace KakiniwaYmm4Import
                 HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(0, 10, 0, 0),
             };
-            var ok = new Button { Content = "実行", Padding = new Thickness(16, 4, 16, 4), Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
-            var cancel = new Button { Content = "キャンセル", Padding = new Thickness(12, 4, 12, 4), IsCancel = true };
+            var ok = new Button { Content = Tr.T("ui.run"), Padding = new Thickness(16, 4, 16, 4), Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var cancel = new Button { Content = Tr.T("ui.cancel"), Padding = new Thickness(12, 4, 12, 4), IsCancel = true };
             ok.Click += (_, __) => { win.DialogResult = true; };
             buttons.Children.Add(ok);
             buttons.Children.Add(cancel);
@@ -84,36 +84,90 @@ namespace KakiniwaYmm4Import
 
     public class ImportToolView : UserControl
     {
-        readonly TextBox logBox;
-        readonly StackPanel mappingPanel;
-        readonly Button placeButton;
-        readonly Button pauseButton;
-        readonly Button stopButton;
+        TextBox logBox = null!;
+        // 窓に出すログは伏せ字にする(スクリーンショットで共有されるため)。
+        // 元の文面はここに持ち、保存するときに1回だけ伏せる(伏せ字を重ねて伏せると文字数表示が壊れる)。
+        readonly System.Text.StringBuilder rawLog = new System.Text.StringBuilder();
+        StackPanel mappingPanel = null!;
+        Button placeButton = null!;
+        Button pauseButton = null!;
+        Button stopButton = null!;
         ImportControl? running;
-        readonly TextBox baseLayerBox;
-        readonly ComboBox startAtCombo;
-        readonly Button registerPresetsButton;
+        TextBox baseLayerBox = null!;
+        ComboBox startAtCombo = null!;
+        ComboBox voiceModeCombo = null!;
+        ComboBox gapModeCombo = null!;
+        TextBox gapSecondsBox = null!;
+        // 素材名 → レイヤー番号の入力欄(パックを読んだあとに、パックの素材から作る)
+        readonly Dictionary<string, TextBox> assetLayerBoxes = new Dictionary<string, TextBox>();
+        StackPanel assetPanel = new StackPanel { Margin = new Thickness(12, 2, 0, 2) };
+        // キャラid → レイヤー番号の入力欄(「キャラごとに指定」のときだけ見せる)
+        readonly Dictionary<string, TextBox> voiceLayerBoxes = new Dictionary<string, TextBox>();
+        // 素材の種類 → レイヤー番号の入力欄(空=自動)
+        readonly Dictionary<string, TextBox> kindLayerBoxes = new Dictionary<string, TextBox>();
+        Button registerPresetsButton = null!;
         readonly List<Tuple<string, ComboBox>> combos = new List<Tuple<string, ComboBox>>();
         readonly ImportSettings settings = SettingsStore.Load(null);
         Pack? pack;
         string packDir = "";
 
+        // 言語の選択欄(0=自動、以降は Tr.AvailableLanguages の順)
+        List<string> languageCodes = new List<string>();
+        bool buildingUi;
+
         public ImportToolView()
         {
+            Tr.Preferred = settings.Language;
+            BuildContent();
+        }
+
+        /// <summary>窓の中身を作る。言語を切り替えたときは、これをもう一度呼んで作り直す。</summary>
+        void BuildContent()
+        {
+            buildingUi = true;
+            kindLayerBoxes.Clear();
+            voiceLayerBoxes.Clear();
+            assetLayerBoxes.Clear();
+            assetPanel = new StackPanel { Margin = new Thickness(12, 2, 0, 2) };
             MinWidth = 360;
             MinHeight = 300;
 
             var root = new DockPanel { Margin = new Thickness(8) };
 
             var top = new StackPanel();
+            // 版数は常に見える場所に置く(ログが流れても、窓の一部だけを撮っても写る)
+            top.Children.Add(new TextBlock
+            {
+                Text = Tr.T("ui.header", PackSchema.PluginVersion,
+                    typeof(VoiceItem).Assembly.GetName().Version?.ToString() ?? "?"),
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 0, 0, 4),
+            });
+            var langRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            langRow.Children.Add(new TextBlock { Text = Tr.T("ui.language"), VerticalAlignment = VerticalAlignment.Center });
+            var langCombo = new ComboBox();
+            languageCodes = new List<string> { "auto" };
+            languageCodes.AddRange(Tr.AvailableLanguages());
+            langCombo.Items.Add(Tr.T("ui.language.auto"));
+            foreach (var code in languageCodes.Skip(1)) langCombo.Items.Add(Tr.NativeName(code));
+            var chosen = languageCodes.IndexOf(settings.Language ?? "auto");
+            langCombo.SelectedIndex = chosen < 0 ? 0 : chosen;
+            langCombo.SelectionChanged += (_, __) =>
+            {
+                if (buildingUi) return;
+                if (running != null) { langCombo.SelectedIndex = Math.Max(0, languageCodes.IndexOf(settings.Language ?? "auto")); return; }
+                OnLanguageChanged(languageCodes[Math.Max(0, langCombo.SelectedIndex)]);
+            };
+            langRow.Children.Add(langCombo);
+            top.Children.Add(langRow);
             top.Children.Add(new TextBlock
             {
                 TextWrapping = TextWrapping.Wrap,
-                Text = "β版です。取り込むと、いま開いているプロジェクトのタイムラインに項目が追加されます。元に戻す操作は確認できていないので、先にプロジェクトを保存しておいてください。",
+                Text = Tr.T("ui.beta"),
             });
             var selectButton = new Button
             {
-                Content = "1. 受け渡しパックのフォルダを選ぶ",
+                Content = Tr.T("ui.selectPack"),
                 Margin = new Thickness(0, 8, 0, 4),
                 Padding = new Thickness(10, 6, 10, 6),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -123,7 +177,7 @@ namespace KakiniwaYmm4Import
 
             top.Children.Add(new TextBlock
             {
-                Text = "2. 話者の割り当て(パックのキャラ → YMM4のキャラクター)",
+                Text = Tr.T("ui.speakers"),
                 Margin = new Thickness(0, 4, 0, 2),
             });
             mappingPanel = new StackPanel { Margin = new Thickness(12, 0, 0, 4) };
@@ -136,26 +190,104 @@ namespace KakiniwaYmm4Import
             };
             destRow.Children.Add(new TextBlock
             {
-                Text = "配置先: 開始レイヤー ",
+                Text = Tr.T("ui.baseLayer"),
                 VerticalAlignment = VerticalAlignment.Center,
             });
             baseLayerBox = new TextBox { Width = 44, Text = settings.BaseLayer.ToString() };
             destRow.Children.Add(baseLayerBox);
             destRow.Children.Add(new TextBlock
             {
-                Text = "  開始位置 ",
+                Text = Tr.T("ui.startAt"),
                 VerticalAlignment = VerticalAlignment.Center,
             });
             startAtCombo = new ComboBox();
-            startAtCombo.Items.Add("先頭(0秒)");
-            startAtCombo.Items.Add("カーソル位置から");
+            startAtCombo.Items.Add(Tr.T("ui.startAt.zero"));
+            startAtCombo.Items.Add(Tr.T("ui.startAt.cursor"));
             startAtCombo.SelectedIndex = settings.StartAt == "cursor" ? 1 : 0;
             destRow.Children.Add(startAtCombo);
             top.Children.Add(destRow);
 
+            // レイヤーの置き方: セリフ(キャラごと/1つにまとめる/キャラごとに指定)と、素材の種類ごとの固定番号。
+            // 番号は「開始レイヤーを0とした相対番号」。空欄は自動(使うものだけ上から詰める)。
+            var voiceRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+            voiceRow.Children.Add(new TextBlock { Text = Tr.T("ui.voiceLayer"), VerticalAlignment = VerticalAlignment.Center });
+            voiceModeCombo = new ComboBox();
+            voiceModeCombo.Items.Add(Tr.T("ui.voice.perCharacter"));
+            voiceModeCombo.Items.Add(Tr.T("ui.voice.single"));
+            voiceModeCombo.Items.Add(Tr.T("ui.voice.custom"));
+            voiceModeCombo.SelectedIndex = VoiceLayerMode.Normalize(settings.VoiceLayerMode) == VoiceLayerMode.Single ? 1
+                : VoiceLayerMode.Normalize(settings.VoiceLayerMode) == VoiceLayerMode.Custom ? 2 : 0;
+            voiceModeCombo.SelectionChanged += (_, __) => UpdateVoiceLayerBoxes();
+            voiceRow.Children.Add(voiceModeCombo);
+            top.Children.Add(voiceRow);
+
+            // セリフとセリフの間の隙間: パックの設定に従う / なし(公式の台本編集のように詰める) / 秒数を指定
+            var gapRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+            gapRow.Children.Add(new TextBlock { Text = Tr.T("ui.gap"), VerticalAlignment = VerticalAlignment.Center });
+            gapModeCombo = new ComboBox();
+            gapModeCombo.Items.Add(Tr.T("ui.gap.pack"));
+            gapModeCombo.Items.Add(Tr.T("ui.gap.none"));
+            gapModeCombo.Items.Add(Tr.T("ui.gap.custom"));
+            gapModeCombo.SelectedIndex = SerifGapMode.Normalize(settings.SerifGapMode) == SerifGapMode.None ? 1
+                : SerifGapMode.Normalize(settings.SerifGapMode) == SerifGapMode.Custom ? 2 : 0;
+            gapRow.Children.Add(gapModeCombo);
+            gapSecondsBox = new TextBox
+            {
+                Width = 44,
+                Margin = new Thickness(6, 0, 0, 0),
+                Text = settings.SerifGapSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
+            };
+            var gapUnit = new TextBlock { Text = Tr.T("ui.seconds"), VerticalAlignment = VerticalAlignment.Center };
+            gapRow.Children.Add(gapSecondsBox);
+            gapRow.Children.Add(gapUnit);
+            gapModeCombo.SelectionChanged += (_, __) =>
+            {
+                var custom = gapModeCombo.SelectedIndex == 2;
+                gapSecondsBox.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
+                gapUnit.Visibility = gapSecondsBox.Visibility;
+            };
+            gapSecondsBox.Visibility = gapModeCombo.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+            gapUnit.Visibility = gapSecondsBox.Visibility;
+            top.Children.Add(gapRow);
+
+            var kindPanel = new StackPanel { Margin = new Thickness(12, 2, 0, 2) };
+            var kinds = new[]
+            {
+                Tuple.Create("bg", Tr.T("ui.kind.bg")), Tuple.Create("bgm", Tr.T("ui.kind.bgm")), Tuple.Create("se", Tr.T("ui.kind.se")),
+                Tuple.Create("stage", Tr.T("ui.kind.stage")), Tuple.Create("prop-slot", Tr.T("ui.kind.propSlot")),
+                Tuple.Create("effect", Tr.T("ui.kind.effect")), Tuple.Create("window", Tr.T("ui.kind.window")),
+            };
+            foreach (var k in kinds)
+            {
+                var krow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+                krow.Children.Add(new TextBlock { Text = k.Item2, MinWidth = 110, VerticalAlignment = VerticalAlignment.Center });
+                int saved;
+                var box = new TextBox
+                {
+                    Width = 44,
+                    Text = settings.KindLayers != null && settings.KindLayers.TryGetValue(k.Item1, out saved) ? saved.ToString() : "",
+                };
+                krow.Children.Add(box);
+                krow.Children.Add(new TextBlock { Text = Tr.T("ui.auto"), VerticalAlignment = VerticalAlignment.Center, Foreground = System.Windows.Media.Brushes.Gray });
+                kindPanel.Children.Add(krow);
+                kindLayerBoxes[k.Item1] = box;
+            }
+            top.Children.Add(new Expander
+            {
+                Header = Tr.T("ui.kindsHeader"),
+                Content = kindPanel,
+                Margin = new Thickness(0, 2, 0, 2),
+            });
+            top.Children.Add(new Expander
+            {
+                Header = Tr.T("ui.assetsHeader"),
+                Content = assetPanel,
+                Margin = new Thickness(0, 2, 0, 2),
+            });
+
             placeButton = new Button
             {
-                Content = "3. タイムラインへ配置",
+                Content = Tr.T("ui.place"),
                 Margin = new Thickness(0, 4, 0, 8),
                 Padding = new Thickness(10, 6, 10, 6),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -166,20 +298,20 @@ namespace KakiniwaYmm4Import
             // 再配置と続くので、途中でやめる手段が要る(2026-08-27 要望)
             pauseButton = new Button
             {
-                Content = "一時停止",
+                Content = Tr.T("ui.pause"),
                 Margin = new Thickness(8, 4, 0, 8),
                 Padding = new Thickness(10, 6, 10, 6),
                 IsEnabled = false,
-                ToolTip = "配置を一時停止します(もう一度押すと再開)",
+                ToolTip = Tr.T("ui.pauseTip"),
             };
             pauseButton.Click += OnPauseClick;
             stopButton = new Button
             {
-                Content = "停止",
+                Content = Tr.T("ui.stop"),
                 Margin = new Thickness(8, 4, 0, 8),
                 Padding = new Thickness(10, 6, 10, 6),
                 IsEnabled = false,
-                ToolTip = "配置をやめます。ここまで置いたアイテムはタイムラインに残ります",
+                ToolTip = Tr.T("ui.stopTip"),
             };
             stopButton.Click += OnStopClick;
             var placeRow = new StackPanel { Orientation = Orientation.Horizontal };
@@ -194,7 +326,7 @@ namespace KakiniwaYmm4Import
             var toolsRow = new StackPanel { Orientation = Orientation.Horizontal };
             var exportButton = new Button
             {
-                Content = "YMM4のキャラ設定を書き出す(書き庭連携用)",
+                Content = Tr.T("ui.exportChars"),
                 Margin = new Thickness(0, 0, 8, 8),
                 Padding = new Thickness(10, 4, 10, 4),
             };
@@ -202,7 +334,7 @@ namespace KakiniwaYmm4Import
             toolsRow.Children.Add(exportButton);
             registerPresetsButton = new Button
             {
-                Content = "書き庭の表情をYMM4のプリセットへ登録",
+                Content = Tr.T("ui.registerPresets"),
                 Margin = new Thickness(0, 0, 0, 8),
                 Padding = new Thickness(10, 4, 10, 4),
                 IsEnabled = false,
@@ -221,6 +353,48 @@ namespace KakiniwaYmm4Import
             root.Children.Add(logBox);
 
             Content = root;
+            buildingUi = false;
+        }
+
+        /// <summary>窓の入力欄の値を設定へ写す(配置の前・言語の切り替えで作り直す前に使う)。</summary>
+        void ReadUiIntoSettings()
+        {
+            int parsedLayer;
+            settings.BaseLayer = int.TryParse(baseLayerBox.Text, out parsedLayer)
+                ? Math.Max(0, parsedLayer) : 0;
+            settings.StartAt = startAtCombo.SelectedIndex == 1 ? "cursor" : "zero";
+            settings.VoiceLayerMode = voiceModeCombo.SelectedIndex == 1 ? VoiceLayerMode.Single
+                : voiceModeCombo.SelectedIndex == 2 ? VoiceLayerMode.Custom : VoiceLayerMode.PerCharacter;
+            settings.VoiceLayers = ReadLayerBoxes(voiceLayerBoxes);
+            settings.KindLayers = ReadLayerBoxes(kindLayerBoxes);
+            settings.AssetLayers = ReadLayerBoxes(assetLayerBoxes);
+            settings.SerifGapMode = gapModeCombo.SelectedIndex == 1 ? SerifGapMode.None
+                : gapModeCombo.SelectedIndex == 2 ? SerifGapMode.Custom : SerifGapMode.Pack;
+            double gapSec;
+            if (double.TryParse(gapSecondsBox.Text.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out gapSec)
+                || double.TryParse(gapSecondsBox.Text.Trim(), out gapSec))
+                settings.SerifGapSeconds = SerifGapMode.Resolve(SerifGapMode.Custom, gapSec, 0);
+        }
+
+        /// <summary>言語を切り替える。入力済みの値・読み込んだパック・ログはそのまま、文言だけ作り直す。</summary>
+        void OnLanguageChanged(string code)
+        {
+            ReadUiIntoSettings();
+            // まだ記憶していない話者の選択も、作り直しのあとに残るよう設定へ写す
+            foreach (var pair in combos)
+            {
+                var choice = pair.Item2.SelectedItem as CharacterChoice;
+                if (choice != null && choice.Model != null) settings.SpeakerMap[pair.Item1] = choice.Name;
+            }
+            settings.Language = code;
+            Tr.Preferred = code;
+            SettingsStore.Save(settings, _ => { });
+            var hadPack = pack != null;
+            BuildContent();
+            if (hadPack) BuildMappingRows(true);
+            logBox.Text = LogRedactor.RedactForDisplay(rawLog.ToString());
+            logBox.ScrollToEnd();
         }
 
         void OnExportCharactersClick(object sender, RoutedEventArgs e)
@@ -230,15 +404,15 @@ namespace KakiniwaYmm4Import
                 var chars = Importer.GetYmm4Characters(Log);
                 if (chars.Count == 0)
                 {
-                    Log("YMM4のキャラが取得できません(プロジェクトを開いていますか?)");
+                    Log(Tr.T("log.noChars"));
                     return;
                 }
-                var selected = SelectListDialog.Show("書き出すキャラを選ぶ", chars.Select(c => c.Name));
+                var selected = SelectListDialog.Show(Tr.T("ui.pickExportChars"), chars.Select(c => c.Name));
                 if (selected == null || selected.Count == 0) return;
                 var dialog = new SaveFileDialog
                 {
-                    Title = "書き庭連携用のキャラ設定JSONの保存先",
-                    FileName = "ymm4キャラ設定.json",
+                    Title = Tr.T("ui.saveCharsTitle"),
+                    FileName = Tr.T("ui.saveCharsFile"),
                     Filter = "JSON|*.json",
                 };
                 if (dialog.ShowDialog() != true) return;
@@ -246,13 +420,14 @@ namespace KakiniwaYmm4Import
             }
             catch (Exception ex)
             {
-                Log("例外: " + ex);
+                Log(Tr.T("log.exception", ex));
             }
         }
 
         void Log(string message)
         {
-            logBox.AppendText(message + Environment.NewLine);
+            rawLog.AppendLine(message);
+            logBox.AppendText(LogRedactor.RedactForDisplay(message) + Environment.NewLine);
             logBox.ScrollToEnd();
         }
 
@@ -260,32 +435,37 @@ namespace KakiniwaYmm4Import
         {
             var dialog = new OpenFolderDialog
             {
-                Title = "書き庭の受け渡しパック(timeline.json のあるフォルダ)を選択",
+                Title = Tr.T("ui.pickPackTitle"),
             };
             if (dialog.ShowDialog() != true) return;
 
             logBox.Clear();
+            rawLog.Clear();
             try
             {
                 packDir = dialog.FolderName;
                 pack = Importer.LoadPack(packDir, Log);
                 if (pack == null) return;
                 BuildMappingRows();
+                ApplyPackLayers(pack.Layers);
             }
             catch (Exception ex)
             {
-                Log("例外: " + ex);
+                Log(Tr.T("log.exception", ex));
             }
         }
 
-        void BuildMappingRows()
+        void BuildMappingRows(bool quiet = false)
         {
             mappingPanel.Children.Clear();
             combos.Clear();
+            voiceLayerBoxes.Clear();
+            BuildAssetRows();
             if (pack == null) return;
 
             var options = Importer.GetYmm4Characters(Log);
-            Log("YMM4登録キャラ: " + (options.Count == 0 ? "(取得できず)" : string.Join(", ", options.Select(o => o.Name))));
+            if (!quiet)
+                Log(Tr.T("log.chars", options.Count == 0 ? Tr.T("log.charsNone") : string.Join(", ", options.Select(o => o.Name))));
 
             foreach (var c in pack.Characters)
             {
@@ -300,7 +480,7 @@ namespace KakiniwaYmm4Import
                 var fallbackName = c.Ymm4Name ?? c.Name;
                 combo.Items.Add(new CharacterChoice
                 {
-                    Display = "(名前そのまま: " + fallbackName + ")",
+                    Display = Tr.T("ui.sameName", fallbackName),
                     Name = fallbackName,
                     Model = null,
                 });
@@ -328,9 +508,14 @@ namespace KakiniwaYmm4Import
                     }
                 }
                 row.Children.Add(combo);
+                var vbox = new TextBox { Width = 36, Margin = new Thickness(6, 0, 0, 0), ToolTip = Tr.T("ui.voiceBoxTip") };
+                int vsaved;
+                if (settings.VoiceLayers != null && settings.VoiceLayers.TryGetValue(c.Id, out vsaved)) vbox.Text = vsaved.ToString();
+                voiceLayerBoxes[c.Id] = vbox;
+                row.Children.Add(vbox);
                 var warn = new TextBlock
                 {
-                    Text = " ⚠ 未割り当て(ボイスが付きません)",
+                    Text = Tr.T("ui.unassigned"),
                     Foreground = System.Windows.Media.Brushes.OrangeRed,
                     VerticalAlignment = VerticalAlignment.Center,
                 };
@@ -363,14 +548,14 @@ namespace KakiniwaYmm4Import
                         };
                         prow.Children.Add(new TextBlock
                         {
-                            Text = "└ 立ち絵「" + p.Id + "」 → ",
+                            Text = Tr.T("ui.portraitRow", p.Id),
                             VerticalAlignment = VerticalAlignment.Center,
                             MinWidth = 90,
                         });
                         var pcombo = new ComboBox { MinWidth = 200 };
                         pcombo.Items.Add(new CharacterChoice
                         {
-                            Display = "(上と同じキャラでPSD差し替え)",
+                            Display = Tr.T("ui.portraitSame"),
                             Name = "",
                             Model = null,
                         });
@@ -396,6 +581,80 @@ namespace KakiniwaYmm4Import
             }
             placeButton.IsEnabled = true;
             registerPresetsButton.IsEnabled = true;
+            UpdateVoiceLayerBoxes();
+        }
+
+        /// <summary>パックの `layers`(書き庭側で決めたレイヤー配置)を窓の入力欄の初期値にする。
+        /// 窓で変えれば、そちらが取り込みに使われる。`layers` の無い古いパックでは何もしない。</summary>
+        void ApplyPackLayers(PackLayers? layers)
+        {
+            if (layers == null) return;
+            var mode = layers.VoiceMode();
+            voiceModeCombo.SelectedIndex = mode == VoiceLayerMode.Single ? 1 : mode == VoiceLayerMode.Custom ? 2 : 0;
+            var voice = layers.CleanVoiceLayers();
+            foreach (var kv in voiceLayerBoxes)
+                kv.Value.Text = voice.TryGetValue(kv.Key, out var n) ? n.ToString() : "";
+            var kinds = layers.CleanKinds();
+            foreach (var kv in kindLayerBoxes)
+                kv.Value.Text = kinds.TryGetValue(kv.Key, out var n) ? n.ToString() : "";
+            UpdateVoiceLayerBoxes();
+            Log(Tr.T("log.layersApplied"));
+        }
+
+        /// <summary>パックの素材(背景・BGM・効果音・小物・エフェクト・窓)を1つずつ並べ、レイヤー番号の欄を作る。</summary>
+        void BuildAssetRows()
+        {
+            assetPanel.Children.Clear();
+            assetLayerBoxes.Clear();
+            if (pack == null) return;
+            var seen = new HashSet<string>();
+            var kindName = new Dictionary<string, string>
+            {
+                ["bg"] = Tr.T("ui.kind.bg"), ["bgm"] = Tr.T("ui.kind.bgm"), ["se"] = Tr.T("ui.kind.se"), ["prop"] = Tr.T("ui.kind.prop"),
+                ["effect"] = Tr.T("ui.kind.effect"), ["window"] = Tr.T("ui.kind.window"),
+            };
+            Action<string, string?> add = (kind, name) =>
+            {
+                if (string.IsNullOrEmpty(name) || !seen.Add(name!)) return;
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+                row.Children.Add(new TextBlock { Text = kindName[kind] + ": " + name, MinWidth = 220, VerticalAlignment = VerticalAlignment.Center });
+                int saved;
+                var box = new TextBox
+                {
+                    Width = 44,
+                    Text = settings.AssetLayers != null && settings.AssetLayers.TryGetValue(name!, out saved) ? saved.ToString() : "",
+                };
+                row.Children.Add(box);
+                row.Children.Add(new TextBlock { Text = Tr.T("ui.auto"), VerticalAlignment = VerticalAlignment.Center, Foreground = System.Windows.Media.Brushes.Gray });
+                assetPanel.Children.Add(row);
+                assetLayerBoxes[name!] = box;
+            };
+            foreach (var e in pack.Events)
+            {
+                if (kindName.ContainsKey(e.Type) && e.Asset != null) add(e.Type, e.Asset.Name);
+                if (e.Type == "serif" && e.Se != null) foreach (var s in e.Se) add("se", s.Name);
+            }
+            if (assetPanel.Children.Count == 0)
+                assetPanel.Children.Add(new TextBlock { Text = Tr.T("ui.noAssets"), Foreground = System.Windows.Media.Brushes.Gray });
+        }
+
+        /// <summary>「キャラごとに指定する」のときだけ、話者の行にレイヤー番号の欄を出す。</summary>
+        void UpdateVoiceLayerBoxes()
+        {
+            var show = voiceModeCombo.SelectedIndex == 2;
+            foreach (var b in voiceLayerBoxes.Values) b.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>入力欄から「番号 ≥ 0 の整数だけ」を取り出す(空・不正は自動=入れない)。</summary>
+        static Dictionary<string, int> ReadLayerBoxes(Dictionary<string, TextBox> boxes)
+        {
+            var d = new Dictionary<string, int>();
+            foreach (var kv in boxes)
+            {
+                int n;
+                if (int.TryParse(kv.Value.Text.Trim(), out n) && n >= 0) d[kv.Key] = n;
+            }
+            return d;
         }
 
         async void OnRegisterPresetsClick(object sender, RoutedEventArgs e)
@@ -415,16 +674,16 @@ namespace KakiniwaYmm4Import
                     .ToList();
                 if (eligible.Count == 0)
                 {
-                    Log("PSDレイヤー付きの表情プリセットを持つキャラがパックにいません");
+                    Log(Tr.T("log.noPresetChars"));
                     return;
                 }
-                var selected = SelectListDialog.Show("プリセットを反映するキャラを選ぶ", eligible);
+                var selected = SelectListDialog.Show(Tr.T("ui.pickPresetChars"), eligible);
                 if (selected == null || selected.Count == 0) return;
                 await Importer.RegisterExpressionPresets(pack, packDir, map, selected, Log);
             }
             catch (Exception ex)
             {
-                Log("例外: " + ex);
+                Log(Tr.T("log.exception", ex));
             }
         }
 
@@ -435,14 +694,14 @@ namespace KakiniwaYmm4Import
             if (c.IsPaused)
             {
                 c.Resume();
-                pauseButton.Content = "一時停止";
-                Log("再開しました");
+                pauseButton.Content = Tr.T("ui.pause");
+                Log(Tr.T("log.resumed"));
             }
             else
             {
                 c.Pause();
-                pauseButton.Content = "再開";
-                Log("一時停止しました(次の区切りで止まります。「再開」で続き、「停止」でやめます)");
+                pauseButton.Content = Tr.T("ui.resume");
+                Log(Tr.T("log.paused"));
             }
         }
 
@@ -453,7 +712,7 @@ namespace KakiniwaYmm4Import
             c.Stop();
             stopButton.IsEnabled = false;
             pauseButton.IsEnabled = false;
-            Log("停止します(次の区切りで止まります)…");
+            Log(Tr.T("log.stopping"));
         }
 
         /// <summary>配置中の押せる/押せないを切り替える。二重実行(配置ボタン連打)も防ぐ。</summary>
@@ -462,7 +721,7 @@ namespace KakiniwaYmm4Import
             placeButton.IsEnabled = !on && pack != null;
             pauseButton.IsEnabled = on;
             stopButton.IsEnabled = on;
-            pauseButton.Content = "一時停止";
+            pauseButton.Content = Tr.T("ui.pause");
         }
 
         async void OnPlaceClick(object sender, RoutedEventArgs e)
@@ -479,10 +738,7 @@ namespace KakiniwaYmm4Import
                     var choice = pair.Item2.SelectedItem as CharacterChoice;
                     if (choice != null) map[pair.Item1] = choice;
                 }
-                int parsedLayer;
-                settings.BaseLayer = int.TryParse(baseLayerBox.Text, out parsedLayer)
-                    ? Math.Max(0, parsedLayer) : 0;
-                settings.StartAt = startAtCombo.SelectedIndex == 1 ? "cursor" : "zero";
+                ReadUiIntoSettings();
                 await Importer.Run(pack, packDir, map, settings, Log, control);
 
                 // 今回の割り当てを記憶(次回は最初から選択済みにする)。
@@ -502,10 +758,8 @@ namespace KakiniwaYmm4Import
                 try
                 {
                     System.Windows.MessageBox.Show(
-                        "取り込みを停止しました。\n\n"
-                        + "タイムラインには途中まで配置されたアイテムが残っています。"
-                        + "残す必要が無ければ Ctrl+Z で戻すか、プロジェクトを保存せずに開き直してください。",
-                        "書き庭の台本を取り込む",
+                        Tr.T("msg.stopped"),
+                        Tr.T("msg.title"),
                         System.Windows.MessageBoxButton.OK,
                         System.Windows.MessageBoxImage.Information);
                 }
@@ -517,16 +771,12 @@ namespace KakiniwaYmm4Import
                 //   流れる欄なので、末尾に「例外: …」が増えても利用者は成功したと思って
                 //   閉じてしまう。しかも**半端に配置されたアイテムはタイムラインに残る**。
                 //   利用者のプロジェクトを書き換えている以上、失敗ははっきり伝える。
-                Log("例外: " + ex);
+                Log(Tr.T("log.exception", ex));
                 try
                 {
                     System.Windows.MessageBox.Show(
-                        "取り込みの途中で失敗しました。\n\n"
-                        + "タイムラインには途中まで配置されたアイテムが残っています。"
-                        + "Ctrl+Z で戻すか、プロジェクトを保存せずに開き直してください。\n\n"
-                        + "詳しい内容はダイアログ下部のログに出ています。\n\n"
-                        + ex.Message,
-                        "書き庭の台本を取り込む",
+                        Tr.T("msg.failed", ex.Message),
+                        Tr.T("msg.title"),
                         System.Windows.MessageBoxButton.OK,
                         System.Windows.MessageBoxImage.Warning);
                 }
@@ -536,6 +786,8 @@ namespace KakiniwaYmm4Import
             {
                 running = null;
                 SetRunning(false);
+                // 成功でも失敗でも、直近のログを(伏せ字にして)ファイルに残す
+                SettingsStore.SaveLastLog(rawLog.ToString(), null);
             }
         }
     }

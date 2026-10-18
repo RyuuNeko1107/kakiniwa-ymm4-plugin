@@ -31,7 +31,7 @@ namespace KakiniwaYmm4Import
                 var tlVm = tlProp != null ? tlProp.GetValue(mainVm) : null;
                 var chProp = tlVm != null ? tlVm.GetType().GetProperty("Characters") : null;
                 var list = chProp != null ? chProp.GetValue(tlVm) as System.Collections.IEnumerable : null;
-                if (list == null) { log("Characters 一覧が取得できない"); return result; }
+                if (list == null) { log(Tr.T("log.i.noCharList")); return result; }
 
                 foreach (var entry in list)
                 {
@@ -56,7 +56,7 @@ namespace KakiniwaYmm4Import
             }
             catch (Exception ex)
             {
-                log("キャラ一覧取得失敗: " + ex.Message);
+                log(Tr.T("log.i.charListFail", ex.Message));
             }
             return result;
         }
@@ -66,7 +66,7 @@ namespace KakiniwaYmm4Import
         public static void ExportCharacters(string path, HashSet<string> only, Action<string> log)
         {
             var chars = GetYmm4Characters(log);
-            if (chars.Count == 0) { log("書き出すキャラがいません(プロジェクトを開いていますか?)"); return; }
+            if (chars.Count == 0) { log(Tr.T("log.i.noChars")); return; }
             Action<string> quiet = _ => { };
             var list = new List<Dictionary<string, object?>>();
             foreach (var c in chars)
@@ -146,7 +146,7 @@ namespace KakiniwaYmm4Import
                 WriteIndented = true,
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             }));
-            log("キャラ設定を書き出し: " + list.Count + "人 → " + path);
+            log(Tr.T("log.i.charsExported", list.Count, path));
         }
 
         static object? GetPropValue(object obj, string name)
@@ -208,8 +208,7 @@ namespace KakiniwaYmm4Import
                 if (v == null) return;
                 var cur = v.Major + "." + v.Minor;
                 if (Array.IndexOf(TestedYmm4, cur) < 0)
-                    log("注意: このプラグインの動作確認は YMM4 v" + string.Join("/", TestedYmm4) + "(実行中は v" + v.ToString(3)
-                        + ")。挙動がおかしいときはプラグインの新しい版が無いか確認してください");
+                    log(Tr.T("log.i.versionNote", string.Join("/", TestedYmm4), v.ToString(3)));
             }
             catch { }
         }
@@ -217,12 +216,12 @@ namespace KakiniwaYmm4Import
         static object? LoadPsdFileSettings(string psdPath, Action<string> log)
         {
             var type = FindLoadedType("YukkuriMovieMaker.Plugin.Tachie.Psd.PsdFileSettings");
-            if (type == null) { log("  PsdFileSettings 型が見つからない"); return null; }
+            if (type == null) { log(Tr.T("log.i.typeNotFound", "PsdFileSettings")); return null; }
             // 引数の型(string 1つ)まで確認して選ぶ(バージョン差でのオーバーロード違い対策)
             var m = FindMethodByShape(type, "LoadFromPsdFilePath", new[] { typeof(string) });
-            if (m == null) { log("  LoadFromPsdFilePath が見つからない"); return null; }
+            if (m == null) { log(Tr.T("log.i.notFound", "LoadFromPsdFilePath")); return null; }
             try { return m.Invoke(null, new object?[] { psdPath }); }
-            catch (Exception ex) { log("  プリセット読込失敗: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message)); return null; }
+            catch (Exception ex) { log(Tr.T("log.i.presetLoadFail", ex.InnerException != null ? ex.InnerException.Message : ex.Message)); return null; }
         }
 
         /// <summary>型に合わせて文字列リストを作る(ImmutableList / List / IList対応)</summary>
@@ -257,16 +256,16 @@ namespace KakiniwaYmm4Import
                 {
                     if (f.FieldType.FullName != TargetType) continue;
                     var v = f.GetValue(mainVm);
-                    if (v != null) { log("MainModel 取得: フィールド " + t.Name + "." + f.Name); return v; }
+                    if (v != null) { log(Tr.T("log.i.mainModelField", t.Name, f.Name)); return v; }
                 }
             }
             foreach (var p in mainVm.GetType().GetProperties(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
             {
                 if (p.PropertyType.FullName != TargetType || p.GetIndexParameters().Length > 0) continue;
                 var v = p.GetValue(mainVm);
-                if (v != null) { log("MainModel 取得: プロパティ " + p.Name); return v; }
+                if (v != null) { log(Tr.T("log.i.mainModelProp", p.Name)); return v; }
             }
-            log("MainModel が見つからない → ボイスはファクトリ経路で配置");
+            log(Tr.T("log.i.noMainModel"));
             return null;
         }
 
@@ -283,7 +282,7 @@ namespace KakiniwaYmm4Import
                     .FirstOrDefault(x => x.Name == "AddVoiceItemAsync" && x.GetParameters().Length == 5);
                 if (m == null)
                 {
-                    log("  ボイス: MainModel.AddVoiceItemAsync(5引数) が見つからない。YMM4の更新で中身が変わった可能性があります。プラグインの新しい版が出ていないか確認してください");
+                    log(Tr.T("log.i.noAddVoice"));
                     return Tuple.Create(false, (VoiceItem?)null);
                 }
                 var taskObj = m.Invoke(mainModel, new object?[] { frame, layer, character, serif, null });
@@ -301,19 +300,18 @@ namespace KakiniwaYmm4Import
                         var p2 = FindProp(item.GetType(), name);
                         return p2 != null ? p2.GetValue(item) : null;
                     };
-                    log("  ボイス(UI経路で追加)「" + shortSerif + "」 VoiceLength=" + DumpValue(read("VoiceLength"))
-                        + " VoiceCache=" + (read("VoiceCache") == null ? "null" : "あり"));
+                    log(Tr.T("log.i.voiceUi", shortSerif, DumpValue(read("VoiceLength")),
+                        read("VoiceCache") == null ? "null" : Tr.T("log.i.present")));
                 }
                 else
                 {
-                    log("  ボイス(UI経路で追加)「" + shortSerif + "」(戻り値からアイテム参照は取れず)");
+                    log(Tr.T("log.i.voiceUiNoRet", shortSerif));
                 }
                 return Tuple.Create(true, item);
             }
             catch (Exception ex)
             {
-                log("  ボイス: UI経路での追加失敗「" + shortSerif + "」: "
-                    + (ex.InnerException != null ? ex.InnerException.Message : ex.Message));
+                log(Tr.T("log.i.voiceUiFail", shortSerif, ex.InnerException != null ? ex.InnerException.Message : ex.Message));
                 return Tuple.Create(false, (VoiceItem?)null);
             }
         }
@@ -321,14 +319,15 @@ namespace KakiniwaYmm4Import
         /// <summary>YMM4の正規ファクトリ static VoiceItem.CreateVoiceItemAsync(character, serif, …) で
         /// ボイスアイテムを生成する(UIのセリフ追加と同じ経路)。生成結果の実態もログに出す</summary>
         static async System.Threading.Tasks.Task<VoiceItem?> CreateVoiceItemViaFactory(
-            object character, string serif, Action<string> log)
+            object character, string serif, Action<string> log,
+            string? hatsuon = null, object? videoInfo = null)
         {
             try
             {
                 var m = typeof(VoiceItem)
                     .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
                     .FirstOrDefault(x => x.Name == "CreateVoiceItemAsync");
-                if (m == null) { log("  ボイス: 正規ファクトリが見つからない(YMM4更新で変わった?)"); return null; }
+                if (m == null) { log(Tr.T("log.i.noFactory")); return null; }
                 var ps = m.GetParameters();
                 var args = new object?[ps.Length];
                 args[0] = character;
@@ -336,6 +335,10 @@ namespace KakiniwaYmm4Import
                 for (var i = 2; i < ps.Length; i++)
                     args[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue
                         : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
+                // ★読み指定は作る時点で渡す。作ったあとに Pronounce を書くと、声が作り直されて尺が変わる
+                //   (その時点では実尺を測り終えているので、ずれる)。第4引数が hatsuon(文字列)の版だけ使う。
+                if (!string.IsNullOrEmpty(hatsuon) && ps.Length > 3 && ps[3].ParameterType == typeof(string))
+                    args[3] = hatsuon;
                 var taskObj = m.Invoke(null, args);
                 VoiceItem? item = null;
                 if (taskObj is System.Threading.Tasks.Task task)
@@ -345,7 +348,9 @@ namespace KakiniwaYmm4Import
                     item = rp != null ? rp.GetValue(taskObj) as VoiceItem : null;
                 }
                 else item = taskObj as VoiceItem;
-                if (item == null) { log("  ボイス: 正規ファクトリが null を返した"); return null; }
+                if (item == null) { log(Tr.T("log.i.factoryNull")); return null; }
+                // 公式の台本編集と同じく、生成が済んだ直後に実尺を取り直す(ここで尺が確定する)
+                if (videoInfo != null) ResetVoiceLength(item, videoInfo, log);
 
                 var shortSerif = serif.Length > 12 ? serif.Substring(0, 12) + "…" : serif;
                 Func<string, object?> read = name =>
@@ -353,16 +358,88 @@ namespace KakiniwaYmm4Import
                     var p2 = FindProp(item.GetType(), name);
                     return p2 != null ? p2.GetValue(item) : null;
                 };
-                log("  ボイス(正規生成)「" + shortSerif + "」 VoiceLength=" + DumpValue(read("VoiceLength"))
-                    + " VoiceCache=" + (read("VoiceCache") == null ? "null" : "あり")
-                    + " Length=" + DumpValue(read("Length")));
+                log(Tr.T("log.i.voiceFactory", shortSerif, DumpValue(read("VoiceLength")),
+                    read("VoiceCache") == null ? "null" : Tr.T("log.i.present"), DumpValue(read("Length"))));
                 return item;
             }
             catch (Exception ex)
             {
-                log("  ボイス: 正規ファクトリでの生成失敗: "
-                    + (ex.InnerException != null ? ex.InnerException.Message : ex.Message));
+                log(Tr.T("log.i.factoryFail", ex.InnerException != null ? ex.InnerException.Message : ex.Message));
                 return null;
+            }
+        }
+
+        /// <summary>公式の台本編集(ScenarioLineViewModel.GetVoiceItemAsync)と同じ手順でボイスを作る。
+        /// new VoiceItem(キャラ) → BeginEdit → 文と読みを設定 → (読みが無ければ SerifToHatsuonAsync)
+        /// → EndEditAsync(ここで音声の生成まで待つ)→ ResetLength → 複製。
+        /// ★ファクトリ CreateVoiceItemAsync だけでは音声がまだ作られず(VoiceLength=0・Length は既定の300フレーム)、
+        ///   その尺のまま並べてしまう。生成の完了を待ってから尺を確定させるのがこの関数の役目。
+        /// YMM4 の型はリフレクションで触る(版の差・テスト用スタブに依存しない)。作れなければ null。</summary>
+        static async System.Threading.Tasks.Task<VoiceItem?> CreateVoiceItemOfficial(
+            object character, string serif, string? reading, object? videoInfo, Action<string> log)
+        {
+            var shortSerif = serif.Length > 12 ? serif.Substring(0, 12) + "…" : serif;
+            try
+            {
+                var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                var item = Activator.CreateInstance(typeof(VoiceItem), new object[] { character }) as VoiceItem;
+                if (item == null) { log(Tr.T("log.i.noVoiceCtor")); return null; }
+                var t = item.GetType();
+                t.GetMethod("BeginEdit", flags, null, Type.EmptyTypes, null)?.Invoke(item, null);
+                SetProps(item, log, P("Serif", serif));
+                if (!string.IsNullOrEmpty(reading))
+                    SetProps(item, log, P("Hatsuon", reading!));
+                else
+                {
+                    SetProps(item, log, P("Hatsuon", serif));
+                    var conv = t.GetMethod("SerifToHatsuonAsync", flags, null, Type.EmptyTypes, null);
+                    if (conv != null && conv.Invoke(item, null) is System.Threading.Tasks.Task ct) await ct;
+                }
+                // 編集の確定。ここで音声の生成が走り、完了まで待つ(ValueTask なので AsTask で待つ)
+                var end = t.GetMethod("EndEditAsync", flags, null, Type.EmptyTypes, null)?.Invoke(item, null);
+                if (end != null)
+                {
+                    var asTask = end.GetType().GetMethod("AsTask", Type.EmptyTypes);
+                    if (asTask != null && asTask.Invoke(end, null) is System.Threading.Tasks.Task et) await et;
+                }
+                // 念のため、VoiceLength が入るまで少し待つ(最大20秒)
+                for (var i = 0; i < 100 && VoiceReadiness(item) <= 0; i++)
+                    await System.Threading.Tasks.Task.Delay(200);
+                if (videoInfo != null) ResetVoiceLength(item, videoInfo, log);
+                // 公式は複製を返す。複製で音声が失われていたら元のものを使う
+                var clone = t.GetMethod("GetClone", flags, null, Type.EmptyTypes, null)?.Invoke(item, null) as VoiceItem;
+                var result = clone != null && VoiceReadiness(clone) > 0 ? clone : item;
+                var lp = FindProp(result.GetType(), "Length");
+                log(Tr.T("log.i.voiceOfficial", shortSerif,
+                    DumpValue(GetPropValue(result, "VoiceLength")),
+                    DumpValue(lp != null ? lp.GetValue(result) : null),
+                    clone != null && result == clone ? Tr.T("log.i.cloneSuffix") : ""));
+                return VoiceReadiness(result) > 0 ? result : null; // 生成できていなければ従来の方式へ回す
+            }
+            catch (Exception ex)
+            {
+                log(Tr.T("log.i.officialFail", shortSerif, ex.InnerException != null ? ex.InnerException.Message : ex.Message));
+                return null;
+            }
+        }
+
+        /// <summary>公式の台本編集と同じ ItemEx.ResetLength(item, videoInfo, false) で、ボイスの尺を音声の実尺へ合わせる。
+        /// 第3引数 resetContentOffset は公式の呼び出しに合わせて false。見つからない・失敗したら false を返す。</summary>
+        static bool ResetVoiceLength(object item, object videoInfo, Action<string> log)
+        {
+            try
+            {
+                var reset = typeof(VoiceItem).Assembly.GetType("YukkuriMovieMaker.Project.Items.ItemEx")
+                    ?.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                    .FirstOrDefault(m => m.Name == "ResetLength" && m.GetParameters().Length == 3);
+                if (reset == null) return false;
+                reset.Invoke(null, new object?[] { item, videoInfo, false });
+                return true;
+            }
+            catch (Exception ex)
+            {
+                log(Tr.T("log.reset.fail", ex.InnerException != null ? ex.InnerException.Message : ex.Message));
+                return false;
             }
         }
 
@@ -376,12 +453,12 @@ namespace KakiniwaYmm4Import
         {
             var mainWindow = Application.Current != null ? Application.Current.MainWindow : null;
             var mainVm = mainWindow != null ? mainWindow.DataContext : null;
-            if (mainVm == null) { log("NG: MainWindow.DataContext が null"); return null; }
+            if (mainVm == null) { log(Tr.T("log.i.noDataContext")); return null; }
             log("MainViewModel: " + mainVm.GetType().FullName);
 
             var tlProp = mainVm.GetType().GetProperty("ActiveTimelineViewModel");
             var tlVm = tlProp != null ? tlProp.GetValue(mainVm) : null;
-            if (tlVm == null) { log("NG: ActiveTimelineViewModel が null(プロジェクトが開かれていない?)"); return null; }
+            if (tlVm == null) { log(Tr.T("log.i.noTimelineVm")); return null; }
             log("TimelineViewModel: " + tlVm.GetType().FullName);
 
             for (var t = tlVm.GetType(); t != null; t = t.BaseType)
@@ -393,7 +470,7 @@ namespace KakiniwaYmm4Import
                         var tl = f.GetValue(tlVm) as Timeline;
                         if (tl != null)
                         {
-                            log("Timeline 取得: フィールド " + t.Name + "." + f.Name);
+                            log(Tr.T("log.i.timelineField", t.Name, f.Name));
                             return tl;
                         }
                     }
@@ -405,13 +482,13 @@ namespace KakiniwaYmm4Import
                         var tl = pr.GetValue(tlVm) as Timeline;
                         if (tl != null)
                         {
-                            log("Timeline 取得: プロパティ " + t.Name + "." + pr.Name);
+                            log(Tr.T("log.i.timelineProp", t.Name, pr.Name));
                             return tl;
                         }
                     }
                 }
             }
-            log("NG: TimelineViewModel から Timeline モデルを見つけられなかった");
+            log(Tr.T("log.i.noTimeline"));
             return null;
         }
 
@@ -434,7 +511,7 @@ namespace KakiniwaYmm4Import
                     if (v > 0) return v;
                 }
             }
-            catch (Exception ex) { log(name + "取得失敗(" + ex.Message + ")→ " + fallback); }
+            catch (Exception ex) { log(Tr.T("log.i.getFail", name, ex.Message, fallback)); }
             return fallback;
         }
 
@@ -459,7 +536,7 @@ namespace KakiniwaYmm4Import
                 }
                 catch { }
             }
-            log("  キャラ既定値コピー: " + copied + "項目 (" + item.GetType().Name + ")");
+            log(Tr.T("log.i.charDefaults", copied, item.GetType().Name));
         }
 
         /// <summary>オブジェクトの安全なクローン。GetClone() があればそれを、
@@ -483,7 +560,7 @@ namespace KakiniwaYmm4Import
             }
             catch (Exception ex)
             {
-                log("  クローン失敗(" + type.Name + "): " + ex.Message);
+                log(Tr.T("log.i.cloneFail", type.Name, ex.Message));
                 return null;
             }
         }
@@ -509,20 +586,20 @@ namespace KakiniwaYmm4Import
             {
                 var dp = character.GetType().GetProperty("TachieDefaultItemParameter");
                 var def = dp != null ? dp.GetValue(character) : null;
-                if (def == null) { log("  立ち絵: キャラの TachieDefaultItemParameter が null(立ち絵未設定?)"); return false; }
+                if (def == null) { log(Tr.T("log.i.tachieNoDefault")); return false; }
                 var clone = CloneObject(def, log) ?? def; // 書き換えないので共有でも実害はないがクローン優先
                 var tp = FindProp(tachieItem.GetType(), "TachieItemParameter");
-                if (tp == null || !tp.CanWrite) { log("  立ち絵: TachieItemParameter が書けない"); return false; }
+                if (tp == null || !tp.CanWrite) { log(Tr.T("log.i.tachieNoWrite")); return false; }
                 if (!tp.PropertyType.IsInstanceOfType(clone))
                 {
-                    log("  立ち絵: 型不一致 " + clone.GetType().Name + " → " + tp.PropertyType.Name);
+                    log(Tr.T("log.i.tachieTypeMismatch", clone.GetType().Name, tp.PropertyType.Name));
                     return false;
                 }
                 tp.SetValue(tachieItem, clone);
-                log("  立ち絵: パラメータ設定OK(" + clone.GetType().Name + ")");
+                log(Tr.T("log.i.tachieParamOk", clone.GetType().Name));
                 return true;
             }
-            catch (Exception ex) { log("  立ち絵パラメータ設定失敗: " + ex.Message); return false; }
+            catch (Exception ex) { log(Tr.T("log.i.tachieParamFail", ex.Message)); return false; }
         }
 
         /// <summary>立ち絵アイテムのPSDパス(TachieItemParameter.FilePath)を差し替える。
@@ -535,13 +612,13 @@ namespace KakiniwaYmm4Import
             {
                 var tp = FindProp(tachieItem.GetType(), "TachieItemParameter");
                 var param = tp != null ? tp.GetValue(tachieItem) : null;
-                if (param == null) { log("  立ち絵PSD差し替え: パラメータが取れない"); return; }
+                if (param == null) { log(Tr.T("log.i.psdSwapNoParam")); return; }
                 var fp = param.GetType().GetProperty("FilePath");
-                if (fp == null || !fp.CanWrite) { log("  立ち絵PSD差し替え: FilePath が書けない(" + param.GetType().Name + ")"); return; }
+                if (fp == null || !fp.CanWrite) { log(Tr.T("log.i.psdSwapNoWrite", param.GetType().Name)); return; }
                 fp.SetValue(param, psdPath);
-                log("  立ち絵PSD差し替え: " + Path.GetFileName(psdPath));
+                log(Tr.T("log.i.psdSwap", Path.GetFileName(psdPath)));
             }
-            catch (Exception ex) { log("  立ち絵PSD差し替え失敗: " + ex.Message); }
+            catch (Exception ex) { log(Tr.T("log.i.psdSwapFail", ex.Message)); }
         }
 
         /// <summary>PsdPreset の一括ID解決(PSDプラグインの static ResolvePresets(filePath, presets) を呼ぶ)。
@@ -552,10 +629,10 @@ namespace KakiniwaYmm4Import
             try
             {
                 var vmType = FindLoadedType("YukkuriMovieMaker.Plugin.Tachie.Psd.PsdPresetEditorViewModel");
-                if (vmType == null) { log("  ID解決: PsdPresetEditorViewModel が見つからない"); return null; }
+                if (vmType == null) { log(Tr.T("log.i.idNotFound", "PsdPresetEditorViewModel")); return null; }
                 var resolveM = vmType.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
                     .FirstOrDefault(m2 => m2.Name == "ResolvePresets" && m2.GetParameters().Length == 2);
-                if (resolveM == null) { log("  ID解決: ResolvePresets が見つからない"); return null; }
+                if (resolveM == null) { log(Tr.T("log.i.idNotFound", "ResolvePresets")); return null; }
                 var arr = Array.CreateInstance(presetType, presets.Count);
                 for (var i = 0; i < presets.Count; i++) arr.SetValue(presets[i], i);
                 var res = resolveM.Invoke(null, new object?[] { psdPath, arr });
@@ -576,7 +653,7 @@ namespace KakiniwaYmm4Import
             }
             catch (Exception ex)
             {
-                log("  ID解決失敗: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message));
+                log(Tr.T("log.i.idFail", ex.InnerException != null ? ex.InnerException.Message : ex.Message));
                 return null;
             }
         }
@@ -587,7 +664,7 @@ namespace KakiniwaYmm4Import
         {
             if (string.IsNullOrEmpty(psdPath) || !File.Exists(psdPath))
             {
-                log("  表情: PSDパス不明のためID解決できない");
+                log(Tr.T("log.i.faceNoPsdPath"));
                 return null;
             }
             var presetType = FindLoadedType("YukkuriMovieMaker.Plugin.Tachie.Psd.PsdPreset");
@@ -632,8 +709,8 @@ namespace KakiniwaYmm4Import
                 }
                 if (total == 0) return null;
                 var best = counts.OrderByDescending(kv => kv.Value).First();
-                if (best.Value < total * 0.8) { log("  表情: 区切り文字を特定できず(末尾がバラバラ)"); return null; }
-                log("  表情: レイヤーパス区切り文字を検出 = U+" + ((int)best.Key).ToString("X4") + " (表示: '" + best.Key + "')");
+                if (best.Value < total * 0.8) { log(Tr.T("log.i.faceNoSeparator")); return null; }
+                log(Tr.T("log.i.faceSeparator", ((int)best.Key).ToString("X4"), best.Key));
                 return best.Key;
             }
             catch { return null; }
@@ -648,9 +725,9 @@ namespace KakiniwaYmm4Import
             {
                 var dp = character.GetType().GetProperty("TachieDefaultFaceParameter");
                 var def = dp != null ? dp.GetValue(character) : null;
-                if (def == null) { log("  表情: キャラの TachieDefaultFaceParameter が null(立ち絵未設定?)"); return; }
+                if (def == null) { log(Tr.T("log.i.faceNoDefault")); return; }
                 var clone = CloneObject(def, log);
-                if (clone == null) { log("  表情: クローン不可のため既定表情のまま"); return; }
+                if (clone == null) { log(Tr.T("log.i.faceNoClone")); return; }
 
                 // FilePath: キャラの TachieCharacterParameter.FilePath と完全一致が描画条件
                 var charParam = GetPropValue(character, "TachieCharacterParameter");
@@ -671,20 +748,20 @@ namespace KakiniwaYmm4Import
                             pathsProp.SetValue(clone, paths);
                         if (namesProp != null && namesProp.CanWrite && namesProp.PropertyType.IsInstanceOfType(names))
                             namesProp.SetValue(clone, names);
-                        log("  表情: 全身状態 " + state.Item1.Count + "枚で設定(入替指定 " + layers.Count + "点)");
+                        log(Tr.T("log.i.faceState", state.Item1.Count, layers.Count));
                     }
                 }
 
                 var fp = FindProp(faceItem.GetType(), "TachieFaceParameter");
-                if (fp == null || !fp.CanWrite) { log("  表情: TachieFaceParameter が書けない"); return; }
+                if (fp == null || !fp.CanWrite) { log(Tr.T("log.i.faceNoWrite")); return; }
                 if (!fp.PropertyType.IsInstanceOfType(clone))
                 {
-                    log("  表情: 型不一致 " + clone.GetType().Name + " → " + fp.PropertyType.Name);
+                    log(Tr.T("log.i.faceTypeMismatch", clone.GetType().Name, fp.PropertyType.Name));
                     return;
                 }
                 fp.SetValue(faceItem, clone);
             }
-            catch (Exception ex) { log("  表情パラメータ設定失敗: " + ex.Message); }
+            catch (Exception ex) { log(Tr.T("log.i.faceParamFail", ex.Message)); }
         }
 
         static List<string> ToStringList(object? listObj)
@@ -717,7 +794,7 @@ namespace KakiniwaYmm4Import
             }
             if (newIds == null || newIds.Count != converted.Count)
             {
-                log("  表情: レイヤーIDが解決できず設定不可(書き庭のパック書き出しなら layerIds が自動で付きます)");
+                log(Tr.T("log.i.faceNoLayerIds"));
                 return null;
             }
             return Tuple.Create(newIds, converted);
@@ -748,7 +825,7 @@ namespace KakiniwaYmm4Import
                         pi.SetValue(item, Convert.ChangeType(value, Nullable.GetUnderlyingType(pi.PropertyType) ?? pi.PropertyType));
                         return true;
                     }
-                    log("  " + name + ": プロパティが見つからない");
+                    log(Tr.T("log.i.propNotFound", name));
                     return false;
                 }
 
@@ -779,12 +856,12 @@ namespace KakiniwaYmm4Import
                     }
                     if (any) return true;
                 }
-                log("  " + name + ": " + anim.GetType().Name + " の設定方法が分からない(From/To も Values も無し)");
+                log(Tr.T("log.i.animUnknown", name, anim.GetType().Name));
                 return false;
             }
             catch (Exception ex)
             {
-                log("  " + name + " 設定失敗: " + ex.Message);
+                log(Tr.T("log.i.setFail", name, ex.Message));
                 return false;
             }
         }
@@ -795,17 +872,17 @@ namespace KakiniwaYmm4Import
             try
             {
                 var pi = item.GetType().GetProperty(name);
-                if (pi == null || !pi.CanWrite) { log("  [" + item.GetType().Name + "] " + name + " が無い/書けない"); return; }
+                if (pi == null || !pi.CanWrite) { log(Tr.T("log.i.itemPropMissing", item.GetType().Name, name)); return; }
                 if (!pi.PropertyType.IsInstanceOfType(value))
                 {
-                    log("  [" + item.GetType().Name + "] " + name + " 型不一致: " + value.GetType().Name + " → " + pi.PropertyType.Name);
+                    log(Tr.T("log.i.itemTypeMismatch", item.GetType().Name, name, value.GetType().Name, pi.PropertyType.Name));
                     return;
                 }
                 pi.SetValue(item, value);
             }
             catch (Exception ex)
             {
-                log("  [" + item.GetType().Name + "] " + name + " 設定失敗: " + ex.Message);
+                log(Tr.T("log.i.itemSetFail", item.GetType().Name, name, ex.Message));
             }
         }
 
@@ -822,28 +899,28 @@ namespace KakiniwaYmm4Import
             if (string.IsNullOrEmpty(templateName)) return null;
             ObservableCollection<ItemTemplate>? templates;
             try { templates = ItemSettings.Default?.Templates; }
-            catch (Exception ex) { log("  テンプレ一覧の取得に失敗: " + ex.Message); return null; }
+            catch (Exception ex) { log(Tr.T("log.i.tmplListFail", ex.Message)); return null; }
             if (templates == null || templates.Count == 0) return null;
             var tmpl = templates.FirstOrDefault(t => t != null && t.Name == templateName);
             if (tmpl == null)
             {
-                log("  テンプレ「" + templateName + "」はYMM4に未登録。既定で配置します");
+                log(Tr.T("log.i.tmplMissing", templateName));
                 return null;
             }
             var rep = tmpl.Items?.FirstOrDefault(it => it != null && wantType.IsInstanceOfType(it));
             if (rep == null)
             {
-                log("  テンプレ「" + templateName + "」に " + wantType.Name + " が無いため既定で配置します");
+                log(Tr.T("log.i.tmplNoType", templateName, wantType.Name));
                 return null;
             }
             try
             {
                 var clone = rep.GetClone() as BaseItem;      // 独立コピー(共有参照回避)
                 if (clone == null) return null;
-                log("  テンプレ「" + templateName + "」を適用(" + wantType.Name + ")");
+                log(Tr.T("log.i.tmplApplied", templateName, wantType.Name));
                 return clone;
             }
-            catch (Exception ex) { log("  テンプレ「" + templateName + "」複製失敗: " + ex.Message); return null; }
+            catch (Exception ex) { log(Tr.T("log.i.tmplCloneFail", templateName, ex.Message)); return null; }
         }
 
         // wantType のテンプレアイテムがあればそれ、無ければ fallback() を新規生成して返す
@@ -863,7 +940,7 @@ namespace KakiniwaYmm4Import
                     var pi = item.GetType().GetProperty(name);
                     if (pi == null || !pi.CanWrite)
                     {
-                        log("  [" + item.GetType().Name + "] プロパティ " + name + " が無い/書けない");
+                        log(Tr.T("log.i.itemPropMissing2", item.GetType().Name, name));
                         continue;
                     }
                     var target = Nullable.GetUnderlyingType(pi.PropertyType) ?? pi.PropertyType;
@@ -876,7 +953,7 @@ namespace KakiniwaYmm4Import
                 }
                 catch (Exception ex)
                 {
-                    log("  [" + item.GetType().Name + "] " + name + " 設定失敗: " + ex.Message);
+                    log(Tr.T("log.i.itemSetFail", item.GetType().Name, name, ex.Message));
                 }
             }
         }
@@ -885,7 +962,7 @@ namespace KakiniwaYmm4Import
         /// <param name="logCandidates">候補メソッドの一覧を出すか。小分けに呼ぶとき2回目以降は省く</param>
         static void AddItems(Timeline timeline, List<BaseItem> items, Action<string> log, bool logCandidates = true)
         {
-            if (items.Count == 0) { log("追加するアイテムがありません"); return; }
+            if (items.Count == 0) { log(Tr.T("log.i.noItems")); return; }
 
             var candidates = typeof(Timeline)
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -893,8 +970,8 @@ namespace KakiniwaYmm4Import
                 .ToArray();
             if (logCandidates)
                 foreach (var m in candidates)
-                    log("候補メソッド: " + m.Name + "(" + string.Join(", ",
-                        m.GetParameters().Select(pp => pp.ParameterType.Name + " " + pp.Name)) + ")");
+                    log(Tr.T("log.i.candidate", m.Name, string.Join(", ",
+                        m.GetParameters().Select(pp => pp.ParameterType.Name + " " + pp.Name))));
 
             foreach (var m in candidates.OrderBy(m => m.Name == "AddItems" ? 0 : 1)
                                         .ThenBy(m => m.GetParameters().Length))
@@ -916,18 +993,18 @@ namespace KakiniwaYmm4Import
                     var result = m.Invoke(timeline, args);
                     if (logCandidates)
                     {
-                        log("実行: " + m.Name + " → " + (result == null ? "完了" : result.ToString()));
-                        log("配置完了: " + items.Count + "アイテム");
+                        log(Tr.T("log.i.run", m.Name, result == null ? Tr.T("log.i.done") : result.ToString()));
+                        log(Tr.T("log.i.placed", items.Count));
                     }
                     return;
                 }
                 catch (Exception ex)
                 {
                     var inner = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
-                    log(m.Name + " 失敗: " + inner);
+                    log(Tr.T("log.i.methodFail", m.Name, inner));
                 }
             }
-            log("NG: タイムラインへの一括配置(AddItems)が呼べませんでした。YMM4の更新で中身が変わった可能性があります。プラグインの新しい版が出ていないか確認してください(動作確認済み: YMM4 v4.54)");
+            log(Tr.T("log.i.addItemsNg"));
         }
     }
 }

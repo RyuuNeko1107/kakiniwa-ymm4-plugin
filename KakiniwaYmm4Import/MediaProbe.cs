@@ -31,7 +31,7 @@ namespace KakiniwaYmm4Import
         {
             var sec = AudioDurationSeconds(path);
             if (sec == null)
-                log("  SEの長さを測れないので1秒で置きます(wav/mp3/ogg/opus 以外): " + name);
+                log(Tr.T("log.se.noLength", name));
             return sec ?? 1.0;
         }
         public static double? AudioDurationSeconds(string path)

@@ -744,6 +744,7 @@ namespace KakiniwaYmm4Import.Tests
 
     // ---------- timeline.json のパース・バリデーション(LoadPack) ----------
 
+    [Collection("Tr")]
     public class LoadPackTests : IDisposable
     {
         readonly string dir;
@@ -754,8 +755,17 @@ namespace KakiniwaYmm4Import.Tests
         {
             dir = Path.Combine(Path.GetTempPath(), "kakiniwa-pack-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
+            Tr.ForceLanguage("ja"); // ログの文言を日本語で確かめる(言語の切り替えは別のテスト)
         }
-        public void Dispose() { try { Directory.Delete(dir, true); } catch { } }
+        public void Dispose() { Tr.ForceLanguage(null); try { Directory.Delete(dir, true); } catch { } }
+
+        [Fact]
+        public void ログは表示言語で出る_英語()
+        {
+            Tr.ForceLanguage("en");
+            Importer.LoadPack(dir, Log); // timeline.json が無い
+            Assert.Contains(logs, l => l.StartsWith("timeline.json not found"));
+        }
 
         Pack? Load(string json)
         {
@@ -1239,11 +1249,22 @@ namespace KakiniwaYmm4Import.Tests
             var p = Load();
             Assert.Equal(1, p.Version);
             Assert.Equal("0.2.2", p.PluginMin);          // 書き庭の PLUGIN_MIN_VERSION
-            Assert.Equal("0.4.1", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
+            Assert.Equal("0.5.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
             Assert.Equal(PackSchema.PluginVersion, p.PluginLatest); // 実版と案内が一致
             Assert.Equal("つばめ珈琲", p.Title);
             Assert.Equal("朝のつばめ", p.Episode);
             Assert.Equal("書き庭", p.Generator!.Name);
+        }
+
+        [Fact]
+        public void layers_を読める_YMM4でのレイヤー配置の指定()
+        {
+            // 期待値は手書き(書き庭側の packContract.test.ts の OPTS.layers と対応)
+            var l = Load().Layers;
+            Assert.NotNull(l);
+            Assert.Equal(VoiceLayerMode.Custom, l!.VoiceMode());
+            Assert.Equal(new Dictionary<string, int> { ["sora"] = 3, ["hina"] = 6 }, l.CleanVoiceLayers());
+            Assert.Equal(new Dictionary<string, int> { ["bg"] = 0, ["bgm"] = 1 }, l.CleanKinds());
         }
 
         // ---------- セリフの中の改行(書き庭の [改行]) ----------
@@ -1512,6 +1533,656 @@ namespace KakiniwaYmm4Import.Tests
         {
             Assert.Equal("abc", (string)Priv.Call("FirstChars", "abc", 10)!);
             Assert.Equal("abcde", (string)Priv.Call("FirstChars", "abcdefg", 5)!);
+        }
+    }
+
+    // ---------- ボイス生成待ちの完了判定 ----------
+    //
+    // ★「半数が>1」で抜けると、SAPI5 のように生成が遅い音声で推定尺のまま並べ直してしまう。
+    //   全件が実尺で、前回から1件も変わっていないときだけ完了とする。
+
+    public class VoiceLengthsSettledTests
+    {
+        [Fact]
+        public void 初回は比べる相手が無いので未完了()
+            => Assert.False(Importer.VoiceLengthsSettled(new long[] { 30, 40 }, null));
+
+        [Fact]
+        public void 全件が実尺で変化なしなら完了()
+            => Assert.True(Importer.VoiceLengthsSettled(new long[] { 30, 40 }, new long[] { 30, 40 }));
+
+        [Fact]
+        public void 長さが1件でも変わっていれば未完了()
+            => Assert.False(Importer.VoiceLengthsSettled(new long[] { 30, 45 }, new long[] { 30, 40 }));
+
+        [Fact]
+        public void 確定していないボイスが残っていれば未完了()
+            => Assert.False(Importer.VoiceLengthsSettled(new long[] { 30, 0 }, new long[] { 30, 0 }));
+
+        [Fact]
+        public void 件数が変わったら未完了()
+            => Assert.False(Importer.VoiceLengthsSettled(new long[] { 30, 40, 50 }, new long[] { 30, 40 }));
+    }
+
+    // ---------- レイヤー(レーン)の割り当て ----------
+    //
+    // 既定(指定なし)は従来どおり「登録順に0から詰める」。設定で固定した種類は指定の番号、
+    // 残りは固定番号を避けて空いている番号へ詰める。
+
+    public class LanePlanTests
+    {
+        static LanePlan Plan(string? mode = null, Dictionary<string, int>? voice = null, Dictionary<string, int>? kind = null)
+            => new LanePlan(LanePlan.FixedFromSettings(mode, voice, kind));
+
+        [Fact]
+        public void 指定なしは登録順に0から詰める()
+        {
+            var p = Plan();
+            foreach (var k in new[] { "bg", "chara:a", "voice:a", "voice:b" }) p.Add(k);
+            Assert.Equal(0, p.Of("bg"));
+            Assert.Equal(1, p.Of("chara:a"));
+            Assert.Equal(2, p.Of("voice:a"));
+            Assert.Equal(3, p.Of("voice:b"));
+        }
+
+        [Fact]
+        public void 全員で1つなら全キャラのセリフが同じレーンになる()
+        {
+            var p = Plan(VoiceLayerMode.Single);
+            foreach (var k in new[] { "bg", "voice:a", "voice:b" }) p.Add(LanePlan.CanonicalKey(k, VoiceLayerMode.Single));
+            Assert.Equal(1, p.Of(LanePlan.CanonicalKey("voice:a", VoiceLayerMode.Single)));
+            Assert.Equal(1, p.Of(LanePlan.CanonicalKey("voice:b", VoiceLayerMode.Single)));
+        }
+
+        [Fact]
+        public void キャラごとに指定した番号が使われ_指定の無いキャラは空きへ()
+        {
+            var p = Plan(VoiceLayerMode.Custom, new Dictionary<string, int> { ["a"] = 5 });
+            foreach (var k in new[] { "bg", "voice:a", "voice:b" }) p.Add(k);
+            Assert.Equal(5, p.Of("voice:a"));
+            Assert.Equal(0, p.Of("bg"));
+            Assert.Equal(1, p.Of("voice:b"));
+        }
+
+        [Fact]
+        public void 素材の種類を固定すると自動の番号はそこを避ける()
+        {
+            var p = Plan(null, null, new Dictionary<string, int> { ["bg"] = 1 });
+            foreach (var k in new[] { "bgm", "bg", "voice:a" }) p.Add(k);
+            Assert.Equal(1, p.Of("bg"));
+            Assert.Equal(0, p.Of("bgm"));
+            Assert.Equal(2, p.Of("voice:a")); // 0 と 1 は使用済み
+        }
+
+        [Fact]
+        public void 固定は登録順に関係なく先に確保される()
+        {
+            // bgm(自動)が先でも、後ろの bg の固定番号 0 を奪わない
+            var p = Plan(null, null, new Dictionary<string, int> { ["bg"] = 0 });
+            p.Add("bgm"); p.Add("bg");
+            Assert.Equal(0, p.Of("bg"));
+            Assert.Equal(1, p.Of("bgm"));
+        }
+
+        [Fact]
+        public void 立ち絵と表情は固定の対象外_キャラ単位で重なるため()
+        {
+            var p = Plan(null, null, new Dictionary<string, int> { ["chara"] = 0, ["face"] = 0 });
+            p.Add("chara:a"); p.Add("face:a");
+            Assert.Equal(0, p.Of("chara:a"));
+            Assert.Equal(1, p.Of("face:a"));
+        }
+
+        [Fact]
+        public void 負の番号は無視して自動にする()
+        {
+            var p = Plan(null, null, new Dictionary<string, int> { ["bg"] = -3 });
+            p.Add("bg");
+            Assert.Equal(0, p.Of("bg"));
+        }
+
+        [Fact]
+        public void 未登録のキーは後から空き番号を受け取る()
+        {
+            var p = Plan();
+            p.Add("bg");
+            Assert.Equal(0, p.Of("bg"));
+            Assert.Equal(1, p.Of("se"));
+            Assert.Equal(1, p.Of("se")); // 同じキーは同じ番号
+        }
+
+        [Fact]
+        public void 不明なモード名は従来どおり_キャラごと()
+        {
+            Assert.Equal(VoiceLayerMode.PerCharacter, VoiceLayerMode.Normalize("nonsense"));
+            Assert.Equal("voice:a", LanePlan.CanonicalKey("voice:a", "nonsense"));
+        }
+    }
+
+    // ---------- ログの伏せ字 ----------
+    //
+    // ★期待値は手書きの固定文字列。実装と同じ正規表現で作るとトートロジーになる。
+
+    [Collection("Tr")] // 伏せ字は Tr の辞書を読むので、言語を触るテストと並走させない
+    public class LogRedactorTests
+    {
+        [Fact]
+        public void パスはユーザー名ごと伏せる()
+        {
+            var r = LogRedactor.Redact(@"設定を保存: C:\Users\taro\Videos\ymm4\user\setting\kakiniwa-import.json");
+            Assert.DoesNotContain("taro", r);
+            Assert.DoesNotContain("kakiniwa-import", r);
+            Assert.Equal("設定を保存: <パス>", r);
+        }
+
+        [Fact]
+        public void ファイル名は拡張子だけ残す()
+        {
+            Assert.Equal("素材: <ファイル>.png と <ファイル>.wav を読み込み",
+                LogRedactor.Redact("素材: 山田太郎の写真.png と bgm_秘密.WAV を読み込み"));
+        }
+
+        [Fact]
+        public void セリフ本文は文字数だけ残す()
+        {
+            Assert.Equal("ボイス(UI経路で追加)「(5文字)」", LogRedactor.Redact("ボイス(UI経路で追加)「こんにちは」"));
+        }
+
+        [Fact]
+        public void 絵文字は1文字と数える()
+        {
+            Assert.Equal("「(2文字)」", LogRedactor.Redact("「あ😀」"));
+        }
+
+        [Fact]
+        public void 伏せる物の無い行はそのまま()
+        {
+            var line = "ボイス生成待ち: 10/10件が確定(600ms)";
+            Assert.Equal(line, LogRedactor.Redact(line));
+        }
+
+        [Fact]
+        public void 保存用の本文の先頭に版が付き_本文は伏せ字済み()
+        {
+            var r = LogRedactor.Compose("v0.4.1", "「秘密のセリフ」");
+            Assert.StartsWith("v0.4.1", r);
+            Assert.DoesNotContain("秘密", r);
+        }
+    }
+
+    // ---------- セリフ間の隙間の決め方 ----------
+
+    public class SerifGapModeTests
+    {
+        [Fact]
+        public void 既定はパックの値に従う()
+            => Assert.Equal(0.2, SerifGapMode.Resolve(null, 5, 0.2));
+
+        [Fact]
+        public void なしなら0秒()
+            => Assert.Equal(0, SerifGapMode.Resolve(SerifGapMode.None, 5, 0.2));
+
+        [Fact]
+        public void 指定ならその秒数()
+            => Assert.Equal(0.5, SerifGapMode.Resolve(SerifGapMode.Custom, 0.5, 0.2));
+
+        [Fact]
+        public void 指定が0なら隙間なしと同じ()
+            => Assert.Equal(0, SerifGapMode.Resolve(SerifGapMode.Custom, 0, 0.2));
+
+        [Theory]
+        [InlineData(-1.0, 0.0)]
+        [InlineData(double.NaN, 0.0)]
+        [InlineData(double.PositiveInfinity, 0.0)]
+        [InlineData(99.0, 10.0)]
+        public void 壊れた値は範囲に収める(double custom, double expected)
+            => Assert.Equal(expected, SerifGapMode.Resolve(SerifGapMode.Custom, custom, 0.2));
+
+        [Fact]
+        public void パックの値が壊れていても0以上に収める()
+            => Assert.Equal(0, SerifGapMode.Resolve(SerifGapMode.Pack, 0, -3));
+
+        [Fact]
+        public void 不明なモード名はパックの値に従う()
+            => Assert.Equal(0.2, SerifGapMode.Resolve("nonsense", 5, 0.2));
+    }
+
+    // ---------- 素材1つずつのレイヤー指定 ----------
+
+    public class AssetLanePlanTests
+    {
+        [Fact]
+        public void 指定された素材だけ専用のキーになる()
+        {
+            var layers = new Dictionary<string, int> { ["朝の背景"] = 3 };
+            Assert.Equal("asset:朝の背景", LanePlan.AssetKey("bg", "朝の背景", layers));
+            Assert.Equal("bg", LanePlan.AssetKey("bg", "夜の背景", layers));
+            Assert.Equal("bg", LanePlan.AssetKey("bg", "朝の背景", null));
+        }
+
+        [Fact]
+        public void 素材の指定は種類の指定より優先される()
+        {
+            var assets = new Dictionary<string, int> { ["a"] = 7 };
+            var kinds = new Dictionary<string, int> { ["bg"] = 2 };
+            var p = new LanePlan(LanePlan.FixedFromSettings(null, null, kinds, assets));
+            p.Add(LanePlan.AssetKey("bg", "a", assets));
+            p.Add(LanePlan.AssetKey("bg", "b", assets));
+            Assert.Equal(7, p.Of("asset:a"));
+            Assert.Equal(2, p.Of("bg"));
+        }
+
+        [Fact]
+        public void 素材名にコロンがあっても取り違えない()
+        {
+            var assets = new Dictionary<string, int> { ["x:y"] = 4 };
+            var p = new LanePlan(LanePlan.FixedFromSettings(null, null, null, assets));
+            p.Add("asset:x:y");
+            Assert.Equal(4, p.Of("asset:x:y"));
+        }
+
+        [Fact]
+        public void 素材の固定番号を自動のレーンが奪わない()
+        {
+            var assets = new Dictionary<string, int> { ["a"] = 0 };
+            var p = new LanePlan(LanePlan.FixedFromSettings(null, null, null, assets));
+            p.Add("bgm"); p.Add("asset:a");
+            Assert.Equal(0, p.Of("asset:a"));
+            Assert.Equal(1, p.Of("bgm"));
+        }
+    }
+
+    [Collection("Tr")] // 伏せ字は Tr の辞書を読むので、言語を触るテストと並走させない
+    public class LogRedactorCharaListTests
+    {
+        [Fact]
+        public void 登録キャラの一覧は件数だけ残す()
+        {
+            Assert.Equal("YMM4登録キャラ: (3件)", LogRedactor.Redact("YMM4登録キャラ: たろう, じろう, さぶろう"));
+        }
+
+        [Fact]
+        public void 取得できなかったときは0件()
+            => Assert.Equal("YMM4登録キャラ: (0件)", LogRedactor.Redact("YMM4登録キャラ: (取得できず)"));
+    }
+
+    // ---------- パックの任意項目 layers ----------
+    //
+    // ★後方互換: layers の無い古いパックは null で読める(窓は従来どおり)。壊れた値は窓に出さない。
+
+    public class PackLayersTests
+    {
+        static T Json<T>(string json) => System.Text.Json.JsonSerializer.Deserialize<T>(
+            json, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+
+        [Fact]
+        public void layers_の無い古いパックは_null_で読める()
+        {
+            var p = Json<Pack>("{\"version\":1,\"title\":\"x\",\"episode\":\"y\"}");
+            Assert.Null(p.Layers);
+        }
+
+        [Fact]
+        public void layers_を読める()
+        {
+            var p = Json<Pack>("{\"version\":1,\"layers\":{\"voice\":\"custom\",\"voiceLayers\":{\"sora\":3,\"hina\":6},\"kinds\":{\"bg\":0,\"bgm\":1}}}");
+            Assert.Equal(VoiceLayerMode.Custom, p.Layers!.VoiceMode());
+            Assert.Equal(new Dictionary<string, int> { ["sora"] = 3, ["hina"] = 6 }, p.Layers.CleanVoiceLayers());
+            Assert.Equal(new Dictionary<string, int> { ["bg"] = 0, ["bgm"] = 1 }, p.Layers.CleanKinds());
+        }
+
+        [Fact]
+        public void 知らない項目が混ざっていても読める_将来の拡張に耐える()
+        {
+            var p = Json<Pack>("{\"version\":1,\"layers\":{\"voice\":\"single\",\"future\":{\"a\":1}},\"somethingNew\":true}");
+            Assert.Equal(VoiceLayerMode.Single, p.Layers!.VoiceMode());
+        }
+
+        [Fact]
+        public void 範囲外の番号と知らない種類は落とす()
+        {
+            var l = new PackLayers
+            {
+                Voice = "custom",
+                VoiceLayers = new Dictionary<string, int> { ["a"] = -1, ["b"] = 100, ["c"] = 99, ["d"] = 0 },
+                Kinds = new Dictionary<string, int> { ["bg"] = 2, ["nonsense"] = 3, ["chara"] = 1, ["window"] = 100 },
+            };
+            Assert.Equal(new Dictionary<string, int> { ["c"] = 99, ["d"] = 0 }, l.CleanVoiceLayers());
+            Assert.Equal(new Dictionary<string, int> { ["bg"] = 2 }, l.CleanKinds());
+        }
+
+        [Fact]
+        public void 知らないモード名は_キャラごと()
+            => Assert.Equal(VoiceLayerMode.PerCharacter, new PackLayers { Voice = "nonsense" }.VoiceMode());
+
+        [Fact]
+        public void 何も無ければ空の辞書()
+        {
+            var l = new PackLayers();
+            Assert.Empty(l.CleanVoiceLayers());
+            Assert.Empty(l.CleanKinds());
+        }
+    }
+
+    // ---------- 窓の文言の辞書(日本語・英語) ----------
+    //
+    // ★英語の辞書に日本語を残さない・両方の辞書でキーと差し込み位置({0} {1})を揃える。
+    //   辞書を片方だけ直すと、英語の窓にキー名がそのまま出たり、日本語が混ざったりする。
+
+    [Collection("Tr")] // Tr の静的な状態(言語の登録・固定)を触るテストは直列に走らせる
+    public class StringsTests
+    {
+        static bool HasJapanese(string s) => s.Any(c =>
+            (c >= '぀' && c <= 'ヿ') || (c >= '一' && c <= '鿿') || (c >= 'ｦ' && c <= 'ﾟ'));
+
+        static int Placeholders(string s)
+            => System.Text.RegularExpressions.Regex.Matches(s, @"\{(\d+)\}").Select(m => m.Groups[1].Value).Distinct().Count();
+
+        [Fact]
+        public void 日本語と英語でキーが同じ()
+        {
+            Assert.Empty(Strings.Ja.Keys.Except(Strings.En.Keys));
+            Assert.Empty(Strings.En.Keys.Except(Strings.Ja.Keys));
+        }
+
+        [Fact]
+        public void 英語の辞書に日本語が残っていない()
+        {
+            // ui.language は「間違った言語になった人でも探せる」よう、わざと日英併記にしている
+            var bad = Strings.En.Where(kv => kv.Key != "ui.language" && HasJapanese(kv.Value)).Select(kv => kv.Key).ToList();
+            Assert.True(bad.Count == 0, "日本語が残っている英語の文言: " + string.Join(", ", bad));
+        }
+
+        [Fact]
+        public void 両方の辞書で差し込み位置の数が同じ()
+        {
+            var bad = Strings.Ja.Keys.Where(k => Placeholders(Strings.Ja[k]) != Placeholders(Strings.En[k])).ToList();
+            Assert.True(bad.Count == 0, "差し込み位置が食い違う: " + string.Join(", ", bad));
+        }
+
+        [Fact]
+        public void 値が空の文言が無い()
+        {
+            Assert.DoesNotContain(Strings.Ja.Values, string.IsNullOrWhiteSpace);
+            Assert.DoesNotContain(Strings.En.Values, string.IsNullOrWhiteSpace);
+        }
+
+        [Fact]
+        public void 言語を固定して引ける_手書きの期待値()
+        {
+            try
+            {
+                Tr.ForceLanguage("ja");
+                Assert.Equal("書き庭 台本インポート v0.5.0", Tr.T("window.title", "0.5.0"));
+                Tr.ForceLanguage("en");
+                Assert.Equal("Kakiniwa Script Import v0.5.0", Tr.T("window.title", "0.5.0"));
+            }
+            finally { Tr.ForceLanguage(null); }
+        }
+
+        [Fact]
+        public void 辞書に無い言語は英語_キーが無ければ日本語_それも無ければキー()
+        {
+            Assert.Equal(Strings.En["ui.run"], Tr.Lookup("fr", "ui.run"));
+            Assert.Equal("nonexistent.key", Tr.Lookup("en", "nonexistent.key"));
+        }
+
+        [Fact]
+        public void 表示言語の判定_日本語以外は英語()
+        {
+            Assert.Equal("ja", Tr.Detect(new System.Globalization.CultureInfo("ja-JP")));
+            Assert.Equal("en", Tr.Detect(new System.Globalization.CultureInfo("en-US")));
+            Assert.Equal("es", Tr.Detect(new System.Globalization.CultureInfo("es-ES")));
+            Assert.Equal("en", Tr.Detect(new System.Globalization.CultureInfo("fr-FR")));
+        }
+
+        [Fact]
+        public void 画面用はパスだけ伏せる_ファイル名とセリフとキャラ名は見せる()
+        {
+            Assert.Equal("素材: <パス>", LogRedactor.RedactForDisplay(@"素材: C:\Users\taro\Videos\a.png"));
+            Assert.Equal("  ボイス「こんにちは」 bg.png YMM4登録キャラ: たろう, じろう",
+                LogRedactor.RedactForDisplay("  ボイス「こんにちは」 bg.png YMM4登録キャラ: たろう, じろう"));
+        }
+
+        [Fact]
+        public void 伏せ字は英語のログの登録キャラ行にも効く()
+        {
+            Assert.Equal("YMM4 characters: (3)", LogRedactor.Redact("YMM4 characters: Taro, Jiro, Saburo"));
+            Assert.Equal("YMM4 characters: (0)", LogRedactor.Redact("YMM4 characters: (unavailable)"));
+        }
+
+        [Fact]
+        public void 伏せ字はスペイン語など辞書にある全部の言語の登録キャラ行にも効く()
+        {
+            // 実機確認で見つかった: 日本語と英語の言い方しか知らず、スペイン語の行が素通りだった
+            Assert.Equal("Personajes de YMM4: (3)", LogRedactor.Redact("Personajes de YMM4: Taro, Jiro, Saburo"));
+            Assert.Equal("Personajes de YMM4: (0)", LogRedactor.Redact("Personajes de YMM4: (no disponible)"));
+            // 外部の言語ファイル(lang/<コード>.json)で足された言語でも効く
+            Tr.Languages["ko"] = new Dictionary<string, string> { ["log.chars"] = "YMM4 캐릭터: {0}" };
+            try { Assert.Equal("YMM4 캐릭터: (2)", LogRedactor.Redact("YMM4 캐릭터: Taro, Jiro")); }
+            finally { Tr.Languages.Remove("ko"); }
+        }
+
+    }
+
+
+    // ---------- 日英以外の言語を足せる(lang/<コード>.json) ----------
+    //
+    // ★翻訳ファイルは利用者・翻訳者が置く外部入力。壊れていても窓が出ること、
+    //   一部だけ訳しても動くこと、組み込みの辞書を書き換えないことを押さえる。
+
+    [Collection("Tr")]
+    public class ExternalLanguageTests : IDisposable
+    {
+        readonly string dir = Path.Combine(Path.GetTempPath(), "kakiniwa-lang-test-" + Guid.NewGuid().ToString("N"));
+
+        public ExternalLanguageTests() { Directory.CreateDirectory(dir); }
+        public void Dispose() { try { Directory.Delete(dir, true); } catch { } }
+
+        static Dictionary<string, Dictionary<string, string>> Fresh() => new Dictionary<string, Dictionary<string, string>>
+        {
+            ["ja"] = Strings.Ja,
+            ["en"] = Strings.En,
+        };
+
+        void Write(string name, string json) => File.WriteAllText(Path.Combine(dir, name), json);
+
+        [Fact]
+        public void 一部だけ訳した言語を足せて_足りないキーは英語で補う()
+        {
+            Write("ko.json", """{"ui.run":"실행","ui.cancel":"취소"}""");
+            var reg = Fresh();
+            Assert.Equal(1, Tr.LoadExternal(dir, reg));
+            Assert.True(reg.ContainsKey("ko"));
+            Assert.Equal("실행", reg["ko"]["ui.run"]);
+            // 訳していないキーは辞書に無い(引くときに 英語 → 日本語 で補われる)
+            Assert.False(reg["ko"].ContainsKey("ui.stop"));
+        }
+
+        [Fact]
+        public void 同じコードが組み込みにあれば_書いたキーだけ上書きし_組み込みは書き換えない()
+        {
+            var before = Strings.En["ui.run"];
+            Write("en.json", """{"ui.run":"Go"}""");
+            var reg = Fresh();
+            Tr.LoadExternal(dir, reg);
+            Assert.Equal("Go", reg["en"]["ui.run"]);
+            Assert.Equal(Strings.En["ui.cancel"], reg["en"]["ui.cancel"]);
+            Assert.Equal(before, Strings.En["ui.run"]); // 組み込みの辞書そのものは変わらない
+        }
+
+        [Fact]
+        public void 壊れたファイル_変な名前_大きすぎるファイルは読み飛ばす()
+        {
+            Write("de.json", "{ これはJSONではない");
+            Write("toolong.json", """{"ui.run":"x"}""");
+            Write("f1.json", """{"ui.run":"x"}""");
+            Write("fr.json", "[1,2,3]");
+            Write("es.json", new string(' ', (int)Tr.MaxLangFileBytes + 10) + """{"ui.run":"Ejecutar"}""");
+            var reg = Fresh();
+            Assert.Equal(0, Tr.LoadExternal(dir, reg));
+            Assert.Equal(new[] { "en", "ja" }, reg.Keys.OrderBy(k => k).ToArray());
+        }
+
+        [Fact]
+        public void 知らないキー_文字列でない値_空の訳は無視する()
+        {
+            Write("pt.json", """{"nonsense.key":"x","ui.run":5,"ui.stop":"  ","ui.cancel":"Cancelar"}""");
+            var reg = Fresh();
+            Assert.Equal(1, Tr.LoadExternal(dir, reg));
+            Assert.Equal(new[] { "ui.cancel" }, reg["pt"].Keys.ToArray());
+        }
+
+        [Fact]
+        public void 訳す物が何も残らないファイルは言語として登録しない()
+        {
+            Write("it.json", """{"nonsense":"x"}""");
+            var reg = Fresh();
+            Assert.Equal(0, Tr.LoadExternal(dir, reg));
+            Assert.False(reg.ContainsKey("it"));
+        }
+
+        [Fact]
+        public void フォルダが無くても落ちない()
+            => Assert.Equal(0, Tr.LoadExternal(Path.Combine(dir, "nothing"), Fresh()));
+
+        [Fact]
+        public void 翻訳で差し込み位置が壊れても窓は落ちず_英語の文言で代用する()
+        {
+            Tr.Languages["xx"] = new Dictionary<string, string> { ["window.title"] = "壊れた {9} と {" };
+            try
+            {
+                Tr.ForceLanguage("xx");
+                Assert.Equal("Kakiniwa Script Import v1.0", Tr.T("window.title", "1.0"));
+            }
+            finally { Tr.ForceLanguage(null); Tr.Languages.Remove("xx"); }
+        }
+    }
+
+    // ---------- 言語の選択(自動 / 明示) ----------
+    //
+    // 窓の言語選択欄が使う部分。選んだ言語が YMM4 の表示言語より優先され、
+    // 「自動」や辞書に無い言語は YMM4 の表示言語に従う。
+
+    [Collection("Tr")]
+    public class LanguagePreferenceTests : IDisposable
+    {
+        public void Dispose() { Tr.Preferred = null; Tr.ForceLanguage(null); }
+
+        static string Culture(string name)
+        {
+            var old = System.Globalization.CultureInfo.CurrentUICulture;
+            try
+            {
+                System.Globalization.CultureInfo.CurrentUICulture = new System.Globalization.CultureInfo(name);
+                return Tr.Language;
+            }
+            finally { System.Globalization.CultureInfo.CurrentUICulture = old; }
+        }
+
+        [Fact]
+        public void 選んだ言語は_YMM4の表示言語より優先される()
+        {
+            Tr.Preferred = "en";
+            Assert.Equal("en", Culture("ja-JP"));
+            Tr.Preferred = "ja";
+            Assert.Equal("ja", Culture("en-US"));
+        }
+
+        [Fact]
+        public void 自動_未設定_辞書に無い言語は_YMM4の表示言語に従う()
+        {
+            Tr.Preferred = "auto";
+            Assert.Equal("ja", Culture("ja-JP"));
+            Assert.Equal("en", Culture("en-US"));
+            Tr.Preferred = null;
+            Assert.Equal("ja", Culture("ja-JP"));
+            Tr.Preferred = "zz"; // 辞書が無い
+            Assert.Equal("en", Culture("en-US"));
+            Assert.Equal("ja", Culture("ja-JP"));
+        }
+
+        [Fact]
+        public void 選べる言語は_日本語と英語が先頭で_残りは名前順()
+        {
+            Tr.Languages["ko"] = new Dictionary<string, string> { ["ui.run"] = "실행" };
+            Tr.Languages["fr"] = new Dictionary<string, string> { ["ui.run"] = "Lancer" };
+            try
+            {
+                // es は組み込み
+                Assert.Equal(new[] { "ja", "en", "es", "fr", "ko" }, Tr.AvailableLanguages().ToArray());
+            }
+            finally { Tr.Languages.Remove("ko"); Tr.Languages.Remove("fr"); }
+        }
+
+        [Fact]
+        public void スペイン語は組み込み_キーは英語と同じ_差し込み位置も同じ()
+        {
+            Assert.Empty(Strings.Es.Keys.Except(Strings.En.Keys));
+            Assert.Empty(Strings.En.Keys.Except(Strings.Es.Keys)); // 訳し漏れが無い
+            Func<string, int> Count = t => System.Text.RegularExpressions.Regex.Matches(t, @"\{(\d+)\}").Select(m => m.Groups[1].Value).Distinct().Count();
+            var bad = Strings.Es.Keys.Where(k => Count(Strings.Es[k]) != Count(Strings.En[k])).ToList();
+            Assert.True(bad.Count == 0, "差し込み位置が食い違う: " + string.Join(", ", bad));
+            // ログの「」は保存時の伏せ字の目印。英語にある「」はスペイン語にも残す
+            var lost = Strings.Es.Keys.Where(k => Strings.En[k].Contains("「") && !Strings.Es[k].Contains("「")).ToList();
+            Assert.True(lost.Count == 0, "「」が消えている: " + string.Join(", ", lost));
+        }
+
+        [Fact]
+        public void スペイン語で引ける_手書きの期待値()
+        {
+            try
+            {
+                Tr.ForceLanguage("es");
+                Assert.Equal("Importar guion de Kakiniwa v0.5.0", Tr.T("window.title", "0.5.0"));
+                Assert.Equal("Pausa", Tr.T("ui.pause"));
+            }
+            finally { Tr.ForceLanguage(null); }
+        }
+
+        [Fact]
+        public void 言語の表示名は_その言語自身の書き方で_知らないコードは大文字()
+        {
+            Assert.Equal("日本語", Tr.NativeName("ja"));
+            Assert.Equal("English", Tr.NativeName("en"));
+            Assert.Equal("한국어", Tr.NativeName("ko"));
+            Assert.Equal("XYZ", Tr.NativeName("xyz"));
+        }
+    }
+
+    // ---------- 設定ファイルの後方互換(ボイスの作り方) ----------
+    //
+    // ★古い kakiniwa-import.json(新しい項目が無い)でも、既定=公式の台本編集と同じ手順で動く。
+    //   LegacyVoicePath は「うまくいかないとき」の保険で、窓には出さず JSON でだけ切り替える。
+
+    public class ImportSettingsCompatTests
+    {
+        static ImportSettings Read(string json) => System.Text.Json.JsonSerializer.Deserialize<ImportSettings>(
+            json, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+
+        [Fact]
+        public void 古い設定ファイルは_公式方式が既定()
+        {
+            var s = Read("{\"BaseLayer\":2,\"StartAt\":\"zero\"}");
+            Assert.False(s.LegacyVoicePath);
+            Assert.Equal(2, s.BaseLayer);
+            Assert.Equal("auto", s.Language);
+            Assert.Equal(VoiceLayerMode.PerCharacter, s.VoiceLayerMode);
+            Assert.Equal(SerifGapMode.Pack, s.SerifGapMode);
+        }
+
+        [Fact]
+        public void LegacyVoicePath_を_true_にすると従来の方式へ戻せる()
+            => Assert.True(Read("{\"LegacyVoicePath\":true}").LegacyVoicePath);
+
+        [Fact]
+        public void 空の設定でも既定値で読める()
+        {
+            var s = Read("{}");
+            Assert.False(s.LegacyVoicePath);
+            Assert.Empty(s.VoiceLayers);
+            Assert.Empty(s.KindLayers);
+            Assert.Empty(s.AssetLayers);
         }
     }
 

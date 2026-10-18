@@ -40,7 +40,7 @@ namespace KakiniwaYmm4Import
             Dictionary<string, CharacterChoice> speakerMap, HashSet<string> only, Action<string> log)
         {
             var presetType = FindLoadedType("YukkuriMovieMaker.Plugin.Tachie.Psd.PsdPreset");
-            if (presetType == null) { log("PsdPreset 型が見つからない(PSDプラグイン未ロード?)"); return; }
+            if (presetType == null) { log(Tr.T("log.psd.noPresetType")); return; }
             LogYmm4VersionIfUntested(log);
             var total = 0;
             List<CharacterChoice>? ymm4Chars = null; // 必要になったら一度だけ取得
@@ -50,7 +50,7 @@ namespace KakiniwaYmm4Import
                 CharacterChoice? choice;
                 if (!speakerMap.TryGetValue(chara.Id, out choice) || choice == null || choice.Model == null)
                 {
-                    log("  " + chara.Name + ": 話者未割り当てのためスキップ");
+                    log(Tr.T("log.psd.noSpeaker", chara.Name));
                     continue;
                 }
                 var itemParam = GetPropValue(choice.Model, "TachieDefaultItemParameter");
@@ -77,7 +77,7 @@ namespace KakiniwaYmm4Import
                     if (!string.IsNullOrEmpty(defaultPsd) && File.Exists(defaultPsd))
                         groups.Add(Tuple.Create(defaultPsd!, "既定", flat));
                     else
-                        log("  " + chara.Name + "(→" + choice.Name + "): PSD立ち絵未設定のため既定の表情をスキップ");
+                        log(Tr.T("log.psd.noTachie", chara.Name, choice.Name));
                 }
                 if (chara.Portraits != null)
                 {
@@ -100,7 +100,7 @@ namespace KakiniwaYmm4Import
                             desc += " → " + explicitSel.Name;
                             if (string.IsNullOrEmpty(target) || !File.Exists(target))
                             {
-                                log("  " + chara.Name + "/" + desc + ": 割り当て先YMM4キャラのPSDが見つからずスキップ");
+                                log(Tr.T("log.psd.noHostPsd", chara.Name, desc));
                                 continue;
                             }
                         }
@@ -114,7 +114,7 @@ namespace KakiniwaYmm4Import
                             desc += " → " + p.Ymm4Name;
                             if (string.IsNullOrEmpty(target) || !File.Exists(target))
                             {
-                                log("  " + chara.Name + "/" + desc + ": 割り当て先YMM4キャラのPSDが見つからずスキップ");
+                                log(Tr.T("log.psd.noHostPsd", chara.Name, desc));
                                 continue;
                             }
                         }
@@ -131,13 +131,13 @@ namespace KakiniwaYmm4Import
                             //   (パック外の実在 PSD のサイドカーを細工パックで上書きされる)。同梱PSDのみ。
                             if (!string.IsNullOrEmpty(rel) && Path.IsPathRooted(rel))
                             {
-                                log("  " + chara.Name + "/" + desc + ": 同梱していない PSD にはプリセットを書きません: " + rel);
+                                log(Tr.T("log.psd.notBundled", chara.Name, desc, rel));
                                 continue;
                             }
                             target = ResolveInPackForWrite(packDir, rel);
                             if (target == null || !File.Exists(target))
                             {
-                                log("  " + chara.Name + "/" + desc + ": 立ち絵PSDが見つからずスキップ");
+                                log(Tr.T("log.psd.noPsd", chara.Name, desc));
                                 continue;
                             }
                         }
@@ -153,8 +153,8 @@ namespace KakiniwaYmm4Import
                 }
             }
             log(total > 0
-                ? "表情プリセット登録完了: 計" + total + "件(YMM4のPSD素材マネージャを開き直すと反映)"
-                : "登録できるプリセットがありませんでした");
+                ? Tr.T("log.psd.done", total)
+                : Tr.T("log.psd.none"));
         }
 
         /// <summary>表情プリセット一式を、指定PSDのサイドカー(-ymm.json)へ登録する。返り値=登録件数</summary>
@@ -180,7 +180,7 @@ namespace KakiniwaYmm4Import
                 var nameProp = presetType.GetProperty("Name");
                 if (nameProp != null && nameProp.CanWrite) nameProp.SetValue(preset, name);
                 var state = await BuildFullFaceState(choice.Model!, expr.Psd!.Layers, expr.Psd!.LayerIds, log);
-                if (state == null) { log("  プリセット「" + name + "」: 全身状態を組めずスキップ"); continue; }
+                if (state == null) { log(Tr.T("log.psd.noState", name)); continue; }
                 var pathsProp = presetType.GetProperty("LayerPaths");
                 if (pathsProp != null && pathsProp.CanWrite)
                     pathsProp.SetValue(preset, MakeStringList(pathsProp.PropertyType, state.Item2));
@@ -197,7 +197,7 @@ namespace KakiniwaYmm4Import
                 var presetsProp = settings.GetType().GetProperty("Presets");
                 if (presetsProp == null || !presetsProp.CanWrite)
                 {
-                    log("  " + label + ": Presets プロパティが書き替えられない");
+                    log(Tr.T("log.psd.noPresetsProp", label));
                     return 0;
                 }
                 var arr = Array.CreateInstance(presetType, working.Count);
@@ -210,15 +210,14 @@ namespace KakiniwaYmm4Import
                 // ★引数の型(string 1つ)まで確認して選ぶ。名前+引数個数だけだと
                 //   YMM4側にオーバーロードが増えた版で別物を呼びかねない
                 var save = FindMethodByShape(settings.GetType(), "SaveFromPsdFilePath", new[] { typeof(string) });
-                if (save == null) { log("  " + label + ": SaveFromPsdFilePath が見つからない"); return 0; }
+                if (save == null) { log(Tr.T("log.psd.noSave", label)); return 0; }
                 save.Invoke(settings, new object?[] { psdPath });
-                log("  " + label + ": " + added + "件のプリセットを登録 → "
-                    + Path.GetFileNameWithoutExtension(psdPath) + "-ymm.json");
+                log(Tr.T("log.psd.saved", label, added, Path.GetFileNameWithoutExtension(psdPath)));
                 return added;
             }
             catch (Exception ex)
             {
-                log("  " + label + ": 保存失敗: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message));
+                log(Tr.T("log.psd.saveFail", label, ex.InnerException != null ? ex.InnerException.Message : ex.Message));
                 return 0;
             }
         }
@@ -264,11 +263,15 @@ namespace KakiniwaYmm4Import
             {
                 var pre = GetPropValue(timeline, "Items") as System.Collections.IEnumerable;
                 if (pre != null) foreach (var it in pre) preExisting.Add(it);
-                if (preExisting.Count > 0) log("既存アイテム " + preExisting.Count + " 件は再配置の対象外にします");
+                if (preExisting.Count > 0) log(Tr.T("log.pre.excluded", preExisting.Count));
             }
-            catch (Exception ex) { log("既存アイテムの記録に失敗(続行): " + ex.Message); }
+            catch (Exception ex) { log(Tr.T("log.pre.fail", ex.Message)); }
 
             var fps = ReadFps(timeline, log);
+            // ボイスの実尺を測る(ResetLength)ための動画情報。取れなければ従来どおり後の取り直しに任せる
+            var voiceVideoInfo = GetPropValue(timeline, "VideoInfo");
+            // 公式方式で1本も作れなかった(声が出ない・版の違い)ときは、残りの行も待たされないよう従来の方式へ切り替える
+            var officialVoiceBroken = false;
             var projW = ReadVideoInfoValue(timeline, "Width", 1920, log);
             var projH = ReadVideoInfoValue(timeline, "Height", 1080, log);
             Func<double, int> F = sec => (int)Math.Round(sec * fps); // 尺(長さ)用
@@ -286,7 +289,7 @@ namespace KakiniwaYmm4Import
                 catch { }
             }
             if (layerOffset > 0 || frameOffset > 0)
-                log("配置先: レイヤー" + layerOffset + "から / " + (frameOffset > 0 ? frameOffset + "フレーム目から" : "先頭から"));
+                log(Tr.T("log.dest", layerOffset, frameOffset > 0 ? Tr.T("log.dest.frame", frameOffset) : Tr.T("log.dest.start")));
             Func<double, int> FrameAt = sec => F(sec) + frameOffset; // 開始位置用
             Func<int, int> L = n => n + layerOffset;
 
@@ -295,15 +298,12 @@ namespace KakiniwaYmm4Import
 
             // レイヤー割り当て(2パス): 実際に使うレーンだけ数えて0から隙間なく詰める。
             // 重なり順: 背景 < BGM < SE < ト書き < キャラ(立ち絵/表情) < 小物 < エフェクト < 窓 < ボイス(字幕)
-            var lanes = new Dictionary<string, int>();
-            var nextLane = 0;
-            Action<string> addLane = key => { if (!lanes.ContainsKey(key)) lanes[key] = nextLane++; };
-            Func<string, int> laneOf = key =>
-            {
-                int l;
-                if (!lanes.TryGetValue(key, out l)) { l = nextLane++; lanes[key] = l; }
-                return l;
-            };
+            // 設定で番号を固定した種類(セリフ・背景など)はその番号、残りは空いている番号へ登場順に詰める。
+            // セリフ「全員で1つ」のときは voice:* に寄せる(LanePlan.CanonicalKey)。
+            var lanePlan = new LanePlan(LanePlan.FixedFromSettings(settings.VoiceLayerMode, settings.VoiceLayers, settings.KindLayers, settings.AssetLayers));
+            Func<string, string?, string> assetKey = (defKey, name) => LanePlan.AssetKey(defKey, name, settings.AssetLayers);
+            Action<string> addLane = key => lanePlan.Add(LanePlan.CanonicalKey(key, settings.VoiceLayerMode));
+            Func<string, int> laneOf = key => lanePlan.Of(LanePlan.CanonicalKey(key, settings.VoiceLayerMode));
             // 封じ込め検証を通した存在確認(絶対/UNC/.. はここで false=UNC を File.Exists に到達させない)。
             Func<PackAssetRef?, bool> assetExists = a =>
                 a != null && ResolveInPack(packDir, a.Path) != null;
@@ -341,17 +341,24 @@ namespace KakiniwaYmm4Import
                 propSlot = AssignGreedySlots(propIdx, i2 => evs[i2].Start, propEnd);
             }
 
-            if (evs.Any(e2 => e2.Type == "bg" && assetExists(e2.Asset))) addLane("bg");
-            if (evs.Any(e2 => e2.Type == "bgm" && assetExists(e2.Asset))) addLane("bgm");
-            if (evs.Any(e2 => e2.Type == "se" && assetExists(e2.Asset))
-                || evs.Any(e2 => e2.Type == "serif" && e2.Se.Any(s2 => assetExists(s2)))) addLane("se");
+            foreach (var e2 in evs)
+                if (e2.Type == "bg" && assetExists(e2.Asset)) addLane(assetKey("bg", e2.Asset!.Name));
+            foreach (var e2 in evs)
+                if (e2.Type == "bgm" && assetExists(e2.Asset)) addLane(assetKey("bgm", e2.Asset!.Name));
+            foreach (var e2 in evs)
+            {
+                if (e2.Type == "se" && assetExists(e2.Asset)) addLane(assetKey("se", e2.Asset!.Name));
+                if (e2.Type == "serif")
+                    foreach (var s2 in e2.Se) if (assetExists(s2)) addLane(assetKey("se", s2.Name));
+            }
             if (evs.Any(e2 => e2.Type == "stage")) addLane("stage");
             foreach (var id in charOrder) addLane("chara:" + id);
             for (var i = 0; i < evs.Count; i++)
-                if (evs[i].Type == "prop" && assetExists(evs[i].Asset)) addLane("prop-slot:" + propSlot[i]);
+                if (evs[i].Type == "prop" && assetExists(evs[i].Asset)) addLane(assetKey("prop-slot:" + propSlot[i], evs[i].Asset!.Name));
             foreach (var e2 in evs)
-                if (e2.Type == "effect" && assetExists(e2.Asset)) addLane("effect:" + e2.Asset!.Name);
-            if (evs.Any(e2 => e2.Type == "window" && assetExists(e2.Asset))) addLane("window");
+                if (e2.Type == "effect" && assetExists(e2.Asset)) addLane(assetKey("effect:" + e2.Asset!.Name, e2.Asset!.Name));
+            foreach (var e2 in evs)
+                if (e2.Type == "window" && assetExists(e2.Asset)) addLane(assetKey("window", e2.Asset!.Name));
             foreach (var id in charOrder) addLane("voice:" + id);
             // 表情アイテムはボイスより下(大きい番号)に。同時刻の表情制御は下の行が勝つため、
             // 表情レイヤーがセリフの表情変更(無効化済みだが保険)より必ず優先される
@@ -363,6 +370,12 @@ namespace KakiniwaYmm4Import
                 var hasExpr = evs.Any(e2 => e2.Type == "serif" && e2.Speaker == id && e2.Expression != null);
                 if (hasTachie && hasExpr) addLane("face:" + id);
             }
+            lanePlan.Resolve();
+            if (VoiceLayerMode.Normalize(settings.VoiceLayerMode) != VoiceLayerMode.PerCharacter
+                || (settings.KindLayers != null && settings.KindLayers.Count > 0))
+                log(Tr.T("log.layers", VoiceLayerMode.Normalize(settings.VoiceLayerMode),
+                    settings.KindLayers != null && settings.KindLayers.Count > 0
+                        ? Tr.T("log.layers.fixed", string.Join(",", settings.KindLayers.Select(kv => kv.Key + ":" + kv.Value))) : ""));
 
             // 現在の立ち位置(layout イベントで更新され、以降の配置に適用)
             var currentLayout = new Dictionary<string, PackPosition>();
@@ -506,7 +519,7 @@ namespace KakiniwaYmm4Import
                     if (sePath == null) continue;
                     var seItem = new AudioItem();
                     SetProps(seItem, log,
-                        P("FilePath", sePath), P("Frame", FrameAt(e.Start)), P("Layer", L(laneOf("se"))),
+                        P("FilePath", sePath), P("Frame", FrameAt(e.Start)), P("Layer", L(laneOf(assetKey("se", se.Name)))),
                         P("Length", F(InlineSeLength(sePath, se.Name, log))), P("Remark", "SE: " + se.Name));
                     items.Add(seItem);
                 }
@@ -523,7 +536,7 @@ namespace KakiniwaYmm4Import
                         if (path == null) break;
                         var item = MakeItem(typeof(ImageItem), ev.Template, log, () => new ImageItem());
                         SetProps(item, log,
-                            P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("bg"))),
+                            P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf(assetKey("bg", ev.Asset!.Name)))),
                             // ★1フレーム未満にしない。@背景 が同時刻に並ぶと次の開始が同じで Length=0 になる
                             //   (小物・窓の退場は Math.Max(1, …) で守っているのに、ここだけ無かった)
                             P("Length", Math.Max(1, F(nextStartOfType(i, new[] { "bg" }) - ev.Start))),
@@ -537,7 +550,7 @@ namespace KakiniwaYmm4Import
                         if (path == null) break;
                         var item = MakeItem(typeof(AudioItem), ev.Template, log, () => new AudioItem());
                         SetProps(item, log,
-                            P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("bgm"))),
+                            P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf(assetKey("bgm", ev.Asset!.Name)))),
                             P("Length", Math.Max(1, F(nextStartOfType(i, new[] { "bgm", "bgm_stop" }) - ev.Start))),
                             P("Remark", "BGM: " + ev.Asset!.Name));
                         items.Add(item);
@@ -554,9 +567,9 @@ namespace KakiniwaYmm4Import
                         //   無言だと「wav に変換すると直る」という説明のつかない挙動になる(2026-08-16 監査)。
                         var seLen = AudioDurationSeconds(path);
                         if (seLen == null)
-                            log("  SEの長さを測れないので1秒で置きます(wav/mp3/ogg/opus 以外): " + ev.Asset!.Name);
+                            log(Tr.T("log.se.noLength", ev.Asset!.Name));
                         SetProps(item, log,
-                            P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("se"))),
+                            P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf(assetKey("se", ev.Asset!.Name)))),
                             P("Length", F(seLen ?? 1.0)),
                             P("Remark", "SE: " + ev.Asset!.Name));
                         items.Add(item);
@@ -588,11 +601,11 @@ namespace KakiniwaYmm4Import
                                             P("Length", Math.Max(1, F(ev.Start - placed.Item2))));
                                         tachieItems.Remove(pos.Speaker);
                                         tachiePlaced.Remove(pos.Speaker);
-                                        log("  退場: " + pos.Speaker + "(立ち絵を " + ev.Start + "秒で終了)");
+                                        log(Tr.T("log.exit", pos.Speaker, ev.Start));
                                     }
                                     else
                                     {
-                                        log("  退場: " + pos.Speaker + "(立ち絵未配置のためスキップ)");
+                                        log(Tr.T("log.exit.skip", pos.Speaker));
                                     }
                                     continue;
                                 }
@@ -617,8 +630,8 @@ namespace KakiniwaYmm4Import
                                         SetAnim(配置済み.Item1, "Y", yOffsetOf(pos.Speaker), log);
                                     }
                                 }
-                                log(string.Format("  配置更新: {0} x={1}% height={2}",
-                                    pos.Speaker, pos.X, pos.Height != null ? pos.Height + "%" : "既定"));
+                                log(Tr.T("log.layoutUpdate",
+                                    pos.Speaker, pos.X, pos.Height != null ? pos.Height + "%" : Tr.T("log.default")));
                             }
                         }
                         break;
@@ -648,8 +661,7 @@ namespace KakiniwaYmm4Import
                         if (!string.IsNullOrEmpty(ev.Template) && !serifTemplateWarned)
                         {
                             serifTemplateWarned = true;
-                            log("  ※ セリフのアイテムテンプレート適用は現状未対応です(実機検証後に対応予定)。"
-                                + "ボイスは既定の設定で配置します");
+                            log(Tr.T("log.serifTemplate"));
                         }
                         var chara = pack.Characters.FirstOrDefault(c => c.Id == ev.Speaker);
                         var charId = ev.Speaker ?? "?";
@@ -674,16 +686,35 @@ namespace KakiniwaYmm4Import
                         var voiceChoice = serifHost != null ? serifHost.Item1 : choice;
                         var voiceName = serifHost != null ? serifHost.Item1.Name : ymm4Name;
 
-                        // 本命: MainModel.AddVoiceItemAsync(UIのセリフ追加の完全経路。
-                        // タイムライン追加+ボイス生成トリガーまでYMM4自身がやる)
+                        // 本命: 公式の台本編集と同じ手順。ボイスをタイムラインの外で作り(生成の完了を待つ)、
+                        // ResetLength で実尺を確定してから、こちらで位置を決めて置く。
+                        // ★従来の MainModel.AddVoiceItemAsync は「タイムラインに置いたあとで、生成が非同期に進む」
+                        //   ので、尺が確定する前に並べてしまう余地があった(設定 LegacyVoicePath で戻せる)。
                         VoiceItem? voice = null;
                         var addedByModel = false;
-                        if (voiceChoice != null && voiceChoice.Model != null && mainModel != null)
+                        var readingApplied = false;
+                        if (!settings.LegacyVoicePath && !officialVoiceBroken && voiceChoice != null && voiceChoice.Model != null)
                         {
+                            voice = await CreateVoiceItemOfficial(voiceChoice.Model, ev.Text ?? "",
+                                string.IsNullOrEmpty(ev.Reading) ? null : ev.Reading, voiceVideoInfo, log);
+                            readingApplied = voice != null && !string.IsNullOrEmpty(ev.Reading);
+                            if (voice == null)
+                            {
+                                officialVoiceBroken = true;
+                                log(Tr.T("log.voice.legacyNext"));
+                            }
+                        }
+                        if (voice == null && voiceChoice != null && voiceChoice.Model != null && mainModel != null)
+                        {
+                            var voicesBefore = new HashSet<object>(VoiceItemsOf(timeline).Cast<object>());
                             var r = await AddVoiceViaMainModel(mainModel,
                                 FrameAt(ev.Start), L(laneOf("voice:" + charId)), voiceChoice.Model, ev.Text ?? "", log);
                             addedByModel = r.Item1;
                             voice = r.Item2;
+                            // ★戻り値からアイテムが取れない版(YMM4 v4.56 など)では voice が null になり、
+                            //   [間:N] と読み指定が黙って落ちていた。追加の前後の差分で今回のアイテムを特定する。
+                            if (addedByModel && voice == null)
+                                voice = VoiceItemsOf(timeline).FirstOrDefault(v2 => !voicesBefore.Contains(v2));
                             if (addedByModel)
                                 directPlacements.Add(Tuple.Create(L(laneOf("voice:" + charId)),
                                     // 記録は1行ずつ読むもの。折り返しをそのまま出すと途中で行が割れる
@@ -691,9 +722,10 @@ namespace KakiniwaYmm4Import
                         }
                         if (!addedByModel)
                         {
-                            // 保険1: 正規ファクトリで生成して自前配置
-                            if (voiceChoice != null && voiceChoice.Model != null)
-                                voice = await CreateVoiceItemViaFactory(voiceChoice.Model, ev.Text ?? "", log);
+                            // 保険1: 正規ファクトリで生成して自前配置(上の本命で作れていればそのまま使う)
+                            if (voice == null && voiceChoice != null && voiceChoice.Model != null)
+                                voice = await CreateVoiceItemViaFactory(voiceChoice.Model, ev.Text ?? "", log,
+                                    null, voiceVideoInfo);
                             if (voice == null)
                             {
                                 // 保険2(未割り当て含む): 手組みプレースホルダ
@@ -710,7 +742,7 @@ namespace KakiniwaYmm4Import
                             SetProps(voice, log, P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("voice:" + charId))));
                             items.Add(voice);
                         }
-                        if (voice != null && !string.IsNullOrEmpty(ev.Reading))
+                        if (voice != null && !readingApplied && !string.IsNullOrEmpty(ev.Reading))
                             SetProps(voice, log, P("Pronounce", ev.Reading!));
                         // 台本に書かれた「間」を覚えておく(実尺での再配置で使う)
                         if (voice != null && ev.Pause > 0) voicePause[voice] = ev.Pause;
@@ -727,9 +759,7 @@ namespace KakiniwaYmm4Import
                                 if (host == null)
                                 {
                                     tachieUnavailable.Add(charId);
-                                    log("  立ち絵「" + (apTachie != null ? apTachie.Id : "?")
-                                        + "」の割り当て先YMM4キャラ「" + PortraitAssignedName(apTachie)
-                                        + "」が見つからないため、パックの画像で仮置きします");
+                                    log(Tr.T("log.tachie.noHost", apTachie != null ? apTachie.Id : "?", PortraitAssignedName(apTachie)));
                                 }
                                 else
                                 {
@@ -761,8 +791,7 @@ namespace KakiniwaYmm4Import
                                         // 実寸不明でフィットできない場合も、横位置と縦オフセットは反映する。
                                         // ★何が起きたかを残す。以前は無言で、立ち絵の大きさだけが
                                         //   合わない理由が分からなかった(2026-08-08 監査)。
-                                        log("  立ち絵の画像が見つからないので、大きさの自動調整を省略しました: "
-                                            + (chara != null ? chara.Name : charId));
+                                        log(Tr.T("log.tachie.noImage", chara != null ? chara.Name : charId));
                                         SetAnim(tachie, "X", xOf(charId, slotIndex), log);
                                         SetAnim(tachie, "Y", yOffsetOf(charId), log);
                                     }
@@ -771,7 +800,7 @@ namespace KakiniwaYmm4Import
                                 else
                                 {
                                     tachieUnavailable.Add(charId);
-                                    log("  → 「" + hostChoice.Name + "」はYMM4側に立ち絵が無いので、パックの画像で仮置きします");
+                                    log(Tr.T("log.tachie.noYmm4", hostChoice.Name));
                                 }
                                 }
                             }
@@ -780,8 +809,7 @@ namespace KakiniwaYmm4Import
                                 // 立ち絵未設定キャラ: パックの表情画像/PSDをセリフ区間に仮置き
                                 var portrait = ResolvePortrait(packDir, chara, activePortraitOf(charId), ev.Expression);
                                 if (portrait == null)
-                                    log("  仮置きの立ち絵画像が見つかりません: "
-                                        + (chara != null ? chara.Name : charId));
+                                    log(Tr.T("log.tachie.noStandin", chara != null ? chara.Name : charId));
                                 if (portrait != null)
                                 {
                                     var img = new ImageItem();
@@ -809,7 +837,7 @@ namespace KakiniwaYmm4Import
                                 var layerIds = packExpr?.Psd?.LayerIds;
                                 if (layers == null || layers.Count == 0)
                                 {
-                                    log("  表情「" + ev.Expression + "」: PSDレイヤー指定が無いためスキップ");
+                                    log(Tr.T("log.face.noLayers", ev.Expression));
                                 }
                                 else
                                 {
@@ -834,8 +862,7 @@ namespace KakiniwaYmm4Import
                                     var hostF = serifHost;
                                     if (hostF == null)
                                     {
-                                        log("  表情「" + ev.Expression + "」: 立ち絵の割り当て先YMM4キャラが"
-                                            + "見つからないためスキップ");
+                                        log(Tr.T("log.face.noHost", ev.Expression));
                                     }
                                     else
                                     {
@@ -855,14 +882,11 @@ namespace KakiniwaYmm4Import
                         else
                         {
                             if (warnedUnmapped.Add(charId))
-                                log("⚠ 「" + (chara != null ? chara.Name : ev.SpeakerName ?? charId) + "」→「" + ymm4Name
-                                    + "」はYMM4未登録の名前です。ボイス・立ち絵は仮配置になります"
-                                    + "(話者の割り当てドロップダウンで登録キャラを選ぶと本配置)");
+                                log(Tr.T("log.unmapped", chara != null ? chara.Name : ev.SpeakerName ?? charId, ymm4Name));
                             // 未割り当てキャラ: パック内の画像/PSDを ImageItem で仮置き(従来動作)
                             var portrait = ResolvePortrait(packDir, chara, activePortraitOf(charId), ev.Expression);
                             if (portrait == null)
-                                log("  仮置きの立ち絵画像が見つかりません: "
-                                    + (chara != null ? chara.Name : charId));
+                                log(Tr.T("log.tachie.noStandin", chara != null ? chara.Name : charId));
                             if (portrait != null)
                             {
                                 var img = new ImageItem();
@@ -894,7 +918,7 @@ namespace KakiniwaYmm4Import
                         var item = MakeItem(typeof(ImageItem), ev.Template, log, () => new ImageItem());
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)),
-                            P("Layer", L(laneOf(isWindow ? "window" : "prop-slot:" + propSlot[i]))),
+                            P("Layer", L(laneOf(isWindow ? assetKey("window", ev.Asset!.Name) : assetKey("prop-slot:" + propSlot[i], ev.Asset!.Name)))),
                             P("Length", Math.Max(1, F(stopAt - ev.Start))),
                             P("Remark", (isWindow ? "テキスト窓: " : "小物: ") + ev.Asset!.Name));
                         var size = ReadImageSize(path);
@@ -938,7 +962,7 @@ namespace KakiniwaYmm4Import
                         var seconds = ev.Seconds > 0 ? ev.Seconds : 2.0;
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)),
-                            P("Layer", L(laneOf("effect:" + ev.Asset!.Name))),
+                            P("Layer", L(laneOf(assetKey("effect:" + ev.Asset!.Name, ev.Asset!.Name)))),
                             P("Length", F(seconds)),
                             P("Remark", "エフェクト: " + ev.Asset!.Name));
                         var size = ReadImageSize(path);
@@ -973,8 +997,7 @@ namespace KakiniwaYmm4Import
                             // ★未登録の立ち絵名: 状態もアイテムも触らない(ログのみ)。
                             //   触ると activePortraitOf が null になり、既定PSDフォールバックで
                             //   無駄な切断・別の顔での置き直しが起きる(2026-08 監査)。
-                            log("  立ち絵切替: 「" + ev.Name + "」は登録されていない立ち絵名のためスキップ("
-                                + sp + " は現在の立ち絵のまま)");
+                            log(Tr.T("log.switch.unknown", ev.Name, sp));
                             break;
                         }
                         activePortrait[sp] = plan.PortraitId;
@@ -1001,10 +1024,8 @@ namespace KakiniwaYmm4Import
                                 var hostP = resolveTachieHost(sp, chP, apNew);
                                 if (hostP == null)
                                 {
-                                    log("  立ち絵「" + (apNew != null ? apNew.Id : plan.PortraitId)
-                                        + "」の割り当て先YMM4キャラ「" + PortraitAssignedName(apNew)
-                                        + "」が見つからないため、次のセリフまで表示をスキップ");
-                                    log("  立ち絵切替: " + sp + " → " + ev.Name);
+                                    log(Tr.T("log.switch.noHost", apNew != null ? apNew.Id : plan.PortraitId, PortraitAssignedName(apNew)));
+                                    log(Tr.T("log.switch", sp, ev.Name));
                                     break;
                                 }
                                 var tachie = new TachieItem();
@@ -1039,9 +1060,9 @@ namespace KakiniwaYmm4Import
                         {
                             // ★プラグインの都合でYMM4を巻き込まない。置き直しに失敗しても
                             //   切替(状態)は済んでいるので、従来どおり次のセリフで復帰できる
-                            log("  立ち絵切替の置き直しに失敗(続行): " + ex.Message);
+                            log(Tr.T("log.switch.replaceFail", ex.Message));
                         }
-                        log("  立ち絵切替: " + sp + " → " + ev.Name);
+                        log(Tr.T("log.switch", sp, ev.Name));
                         break;
                     }
                     case "bgm_stop":
@@ -1050,22 +1071,22 @@ namespace KakiniwaYmm4Import
                     case "custom":
                         break; // アイテム化しない(*_stop は終端計算で消費済み)
                     default:
-                        skipped.Add(string.Format("no.{0}: 未知の type '{1}'", ev.No, ev.Type));
+                        skipped.Add(Tr.T("log.skipped.unknownType", ev.No, ev.Type));
                         break;
                 }
             }
 
-            log(string.Format("アイテム生成: {0}件 (fps={1})", items.Count, fps));
-            foreach (var s in skipped) log("  スキップ: " + s);
+            log(Tr.T("log.items", items.Count, fps));
+            foreach (var s in skipped) log(Tr.T("log.skipped", s));
             // 飛ばしたものがあるなら、末尾でもう一度まとめて言う。1行ずつのスキップは
             // 大量のログに埋もれて気づけず、「配置はできたのに素材が抜けている」まま
             // 動画を作り進めてしまう。何件・何が足りないかを最後に一目で分かるようにする。
             if (emptySerifSkipped > 0)
-                log(string.Format("  中身の無い行(SE や 間 だけ)を {0}件、ボイスにしませんでした", emptySerifSkipped));
+                log(Tr.T("log.emptySerif", emptySerifSkipped));
             if (skipped.Count > 0)
             {
                 log("");
-                log(string.Format("※ {0}件を飛ばしました(素材が見つからない等)。上の「スキップ」行を確認してください", skipped.Count));
+                log(Tr.T("log.skippedTotal", skipped.Count));
             }
 
             // 配置レイヤーの一覧(重なり順の検証用。意図: 番号が大きいほど手前)
@@ -1086,7 +1107,7 @@ namespace KakiniwaYmm4Import
                 }
                 catch { }
             }
-            log("── 配置レイヤー一覧(番号大=手前のつもり) ──");
+            log(Tr.T("log.layerList"));
             foreach (var t in layerSummary.OrderBy(t2 => t2.Item1))
                 log("  L" + t.Item1.ToString().PadLeft(2) + ": " + t.Item2);
 
@@ -1094,15 +1115,15 @@ namespace KakiniwaYmm4Import
             var ranges = ChunkRanges(items.Count, PlaceChunkSize);
             for (var ci = 0; ci < ranges.Count; ci++)
             {
-                try { await control.CheckpointAsync("配置 " + ranges[ci][0] + "/" + items.Count + " 件まで"); }
+                try { await control.CheckpointAsync(Tr.T("log.placing.progress", ranges[ci][0], items.Count)); }
                 catch (ImportStoppedException)
                 {
-                    log("停止: " + ranges[ci][0] + "/" + items.Count + " 件まで配置しました(残りは置いていません)");
+                    log(Tr.T("log.stopped", ranges[ci][0], items.Count));
                     throw;
                 }
                 var chunk = items.GetRange(ranges[ci][0], ranges[ci][1] - ranges[ci][0]);
                 AddItems(timeline, chunk, log, ci == 0);
-                if (ranges.Count > 1) log("配置: " + ranges[ci][1] + "/" + items.Count + " 件");
+                if (ranges.Count > 1) log(Tr.T("log.placing", ranges[ci][1], items.Count));
             }
 
             // 診断: ボイスアイテムがキャラへ解決できているか(ボイス割り当て問題の切り分け)
@@ -1114,33 +1135,37 @@ namespace KakiniwaYmm4Import
                     var cp = FindProp(firstVoice.GetType(), "Character");
                     var c = cp != null ? cp.GetValue(firstVoice) : null;
                     var np = c != null ? c.GetType().GetProperty("Name") : null;
-                    log("診断: 先頭ボイスの Character = "
-                        + (c == null ? "null(この名前のキャラがYMM4に未登録)" : (np != null ? np.GetValue(c) : c)));
+                    log(Tr.T("log.diag.char",
+                        c == null ? Tr.T("log.diag.charNull") : (np != null ? np.GetValue(c) : c)));
                     var vp = c != null ? c.GetType().GetProperty("Voice") : null;
                     var v = vp != null && c != null ? vp.GetValue(c) : null;
-                    if (c != null) log("診断: キャラの声設定 = " + (v == null ? "null(キャラ設定で声が未設定)" : v.GetType().Name));
+                    if (c != null) log(Tr.T("log.diag.voice", v == null ? Tr.T("log.diag.voiceNull") : v.GetType().Name));
                 }
-                catch (Exception ex) { log("診断失敗: " + ex.Message); }
+                catch (Exception ex) { log(Tr.T("log.diag.fail", ex.Message)); }
             }
 
             // ボイスは AddVoiceItemAsync が非同期(バックグラウンド)で生成する。実尺が揃う前に
             // 再配置すると「据え置き」になり推定尺のまま=ボイス間に間隔が残る。生成完了(実尺確定)を
             // 待ってから再配置する。
             await WaitForVoiceLengths(timeline, preExisting, log, control);
-            await control.CheckpointAsync("再配置の前");
+            RefreshVoiceLengths(timeline, preExisting, log);
+            await control.CheckpointAsync(Tr.T("log.beforeRelayout"));
 
             // セリフの尺は推定(charsPerSecond)なので、実ボイス長とズレて「間延び/被り」が出る。
             // 配置後の実尺でセリフを詰め直す(YMM4の ResolveAllItemsCollision は重なりを散らすだけで
             // 隙間を詰めない)。実尺が未確定で再配置を見送ったときだけ、従来の衝突解決を保険で呼ぶ。
-            if (!ResequenceByVoiceLength(timeline, fps, pack.Timing.SerifGap, log, intendedLayer, propItems, propExplicitEnd, preExisting, voicePause, portraitEndSync))
+            var serifGap = SerifGapMode.Resolve(settings.SerifGapMode, settings.SerifGapSeconds, pack.Timing.SerifGap);
+            log(Tr.T("log.gap", serifGap.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
+                SerifGapMode.Normalize(settings.SerifGapMode) == SerifGapMode.Pack ? Tr.T("log.gap.pack") : Tr.T("log.gap.plugin")));
+            if (!ResequenceByVoiceLength(timeline, fps, serifGap, log, intendedLayer, propItems, propExplicitEnd, preExisting, voicePause, portraitEndSync))
             {
                 try
                 {
                     var resolve = typeof(Timeline).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                         .FirstOrDefault(m2 => m2.Name == "ResolveAllItemsCollision" && m2.GetParameters().Length == 0);
-                    if (resolve != null) { resolve.Invoke(timeline, null); log("(保険)衝突解決を実行: 重なりのみ整理"); }
+                    if (resolve != null) { resolve.Invoke(timeline, null); log(Tr.T("log.collision.run")); }
                 }
-                catch (Exception ex) { log("衝突解決失敗: " + ex.Message); }
+                catch (Exception ex) { log(Tr.T("log.collision.fail", ex.Message)); }
             }
 
             // 配置後のボイスアイテムへの後処理:
@@ -1172,7 +1197,7 @@ namespace KakiniwaYmm4Import
                         var fparam = GetPropValue(v2, "TachieFaceParameter");
                         if (fparam == null)
                         {
-                            log("  ボイス表情オフ不可(パラメータnull): " + (vname ?? "?"));
+                            log(Tr.T("log.faceOff.nullParam", vname ?? "?"));
                         }
                         else
                         {
@@ -1184,7 +1209,7 @@ namespace KakiniwaYmm4Import
                             }
                             else
                             {
-                                log("  ボイス表情オフ不可(IsEnabledが無い: " + fparam.GetType().Name + "): " + (vname ?? "?"));
+                                log(Tr.T("log.faceOff.noEnabled", fparam.GetType().Name, vname ?? "?"));
                             }
                         }
                     }
@@ -1200,7 +1225,7 @@ namespace KakiniwaYmm4Import
                         var fr3 = fp3 != null ? Convert.ToInt32(fp3.GetValue(tfi)) : -1;
                         if (fr3 < frameOffset || fr3 > frameOffset + F(totalEnd) + 1) continue;
                         var prm = GetPropValue(tfi, "TachieFaceParameter");
-                        log("診断[表情アイテム@" + fr3 + "]: param="
+                        log(Tr.T("log.diag.faceItem", fr3)
                             + (prm == null ? "null" : prm.GetType().Name)
                             + " IDs=" + DumpValue(prm != null ? GetPropValue(prm, "EnableLayers") : null)
                             + " Paths=" + DumpValue(prm != null ? GetPropValue(prm, "EnableLayerPaths") : null)
@@ -1209,11 +1234,11 @@ namespace KakiniwaYmm4Import
                     }
                 }
 
-                if (hasWindow) log("テキスト窓があるため、字幕を最前面に設定: " + jimakuCount + "件");
+                if (hasWindow) log(Tr.T("log.jimaku", jimakuCount));
                 if (faceOffCount > 0)
-                    log("ボイス側の表情変更を無効化: " + faceOffCount + "件(表情は表情レイヤーが支配)");
+                    log(Tr.T("log.faceOff", faceOffCount));
             }
-            catch (Exception ex) { log("ボイス後処理失敗: " + ex.Message); }
+            catch (Exception ex) { log(Tr.T("log.post.fail", ex.Message)); }
 
             // 書き庭側の声設定の案内。YMM4 の声設定はエンジン統合も単位も別物なので
             // 自動では反映しない(壊すより案内)。パック同梱の「声の設定メモ.txt」と同内容。
@@ -1222,12 +1247,12 @@ namespace KakiniwaYmm4Import
                 var tunedChars = pack.Characters.Where(c2 => c2.Voice != null).ToList();
                 if (tunedChars.Count > 0)
                 {
-                    log("── 声の設定メモ(書き庭の試聴と同じ声にする場合、YMM4のキャラ設定を以下に) ──");
+                    log(Tr.T("log.voiceMemo"));
                     foreach (var c2 in tunedChars)
                     {
                         var v3 = c2.Voice!;
                         var line = "  " + (c2.Ymm4Name ?? c2.Name) + ": " + v3.Engine
-                            + (string.IsNullOrEmpty(v3.Preset) ? "" : " / 話者 " + v3.Preset);
+                            + (string.IsNullOrEmpty(v3.Preset) ? "" : Tr.T("log.voiceMemo.speaker", v3.Preset));
                         if (v3.Params != null && v3.Params.Count > 0)
                             line += " / " + string.Join(" ", v3.Params.Select(kv => kv.Key + "=" + kv.Value));
                         log(line);
@@ -1381,7 +1406,7 @@ namespace KakiniwaYmm4Import
             double? 実高 = (psdHeight != null && psdHeight > 0) ? psdHeight : (size != null ? (double?)size.Item2 : null);
             if (実高 == null)
             {
-                log("  立ち絵サイズ不明のためレイアウト省略: " + Path.GetFileName(path));
+                log(Tr.T("log.tachie.noSize", Path.GetFileName(path)));
                 return;
             }
             // 拡大率は「このプロジェクトの高さ」から出す(解像度に依存するので必ずここで計算)
@@ -1392,48 +1417,112 @@ namespace KakiniwaYmm4Import
             var ok1 = SetAnim(img, "Zoom", zoom, log);
             var ok2 = SetAnim(img, "X", x, log);
             var ok3 = SetAnim(img, "Y", y, log);
-            log(string.Format("  立ち絵レイアウト: {0} zoom={1:F1}% x={2:F0} y={3:F0} ({4})",
+            log(Tr.T("log.tachie.layout",
                 Path.GetFileName(path), zoom, x, y,
-                (ok1 && ok2 && ok3) ? "OK" : "一部失敗"));
+                (ok1 && ok2 && ok3) ? "OK" : Tr.T("log.partialFail")));
         }
 
-        /// <summary>ボイス生成(非同期)の完了を待つ。VoiceItem.Length が実尺(>1)になるまで最大約20秒ポーリング。
-        /// 半数以上が確定したら抜ける(残りが遅れても再配置は安全側で据え置く)。await Task.Delay で
-        /// UIスレッドを塞がず生成を進めさせる。</summary>
+        static List<VoiceItem> VoiceItemsOf(Timeline timeline)
+        {
+            var itemsEnum = GetPropValue(timeline, "Items") as System.Collections.IEnumerable;
+            return itemsEnum == null ? new List<VoiceItem>() : itemsEnum.Cast<object>().OfType<VoiceItem>().ToList();
+        }
+
+        /// <summary>ボイス1本の「生成が済んだか」の目安(0=未完了)。
+        /// 実際の音声の長さ VoiceLength(ミリ秒)があればそれ、無い版では Length(フレーム)が1より大きいときだけ。
+        /// ★Length は推定の値のまま居座ることがある(公式の台本編集も、生成後に ResetLength で取り直している)。
+        ///   VoiceLength は音声ができて初めて入るので、こちらを完了の印にする。</summary>
+        static long VoiceReadiness(object voice)
+        {
+            var vp = FindProp(voice.GetType(), "VoiceLength");
+            if (vp != null)
+            {
+                var v = vp.GetValue(voice);
+                if (v is TimeSpan ts) return (long)Math.Round(ts.TotalMilliseconds);
+            }
+            var lp = FindProp(voice.GetType(), "Length");
+            var len = lp != null ? Convert.ToInt64(lp.GetValue(voice)) : 0;
+            return len > 1 ? len : 0;
+        }
+
+        /// <summary>ボイス生成の完了とみなせるか。全件が完了(>0)で、前回の測定から1件も変わっていないとき。
+        /// 「半数が確定すれば抜ける」だと、SAPI5 のように生成が遅い音声で未完了のまま並べ直してしまい、
+        /// 後から長さが確定して隙間・被りになる。</summary>
+        internal static bool VoiceLengthsSettled(IReadOnlyList<long> now, IReadOnlyList<long>? previous)
+        {
+            if (previous == null || previous.Count != now.Count) return false;
+            for (var i = 0; i < now.Count; i++)
+                if (now[i] <= 0 || now[i] != previous[i]) return false;
+            return true;
+        }
+
+        /// <summary>ボイス生成(非同期)の完了を待つ。全件の VoiceLength が確定し、3回(600ms)続けて
+        /// 変わらなくなるまで最大60秒ポーリングする。await Task.Delay で UI スレッドを塞がず生成を進めさせる。</summary>
         static async System.Threading.Tasks.Task WaitForVoiceLengths(Timeline timeline, HashSet<object> preExisting, Action<string> log, ImportControl? control = null)
         {
             try
             {
-                var itemsEnum = GetPropValue(timeline, "Items") as System.Collections.IEnumerable;
-                if (itemsEnum == null) return;
-                // ★今回置いたボイスだけを数える。既存アイテムのあるプロジェクトでは、実尺確定済みの
-                //   既存ボイスだけで「半数」を満たして即抜けし、今回分の生成を一切待たずに再配置が
-                //   据え置き→保険の衝突解決がタイムライン全体に走って既存が散る、があった。
-                var voices = itemsEnum.Cast<object>().OfType<VoiceItem>()
-                    .Where(v => !preExisting.Contains(v)).ToList();
+                // ★今回置いたボイスだけを数える。既存アイテムのあるプロジェクトでは、確定済みの
+                //   既存ボイスだけで即抜けし、今回分の生成を一切待たずに再配置が据え置き→保険の衝突解決が
+                //   タイムライン全体に走って既存が散る、があった。
+                var voices = VoiceItemsOf(timeline).Where(v => !preExisting.Contains(v)).ToList();
                 if (voices.Count == 0) return;
-                int LenOf(object it)
+                long[]? prev = null;
+                var stable = 0;
+                for (var i = 0; i < 300; i++) // 300 * 200ms = 最大60秒
                 {
-                    var p = FindProp(it.GetType(), "Length");
-                    return p != null ? Convert.ToInt32(p.GetValue(it)) : 0;
-                }
-                var need = (voices.Count + 1) / 2;
-                for (var i = 0; i < 100; i++) // 100 * 200ms = 最大20秒
-                {
-                    var ready = voices.Count(v => LenOf(v) > 1);
-                    if (ready >= need)
+                    var now = voices.Select(v => VoiceReadiness(v)).ToArray();
+                    var ready = now.Count(l => l > 0);
+                    stable = VoiceLengthsSettled(now, prev) ? stable + 1 : 0;
+                    prev = now;
+                    if (stable >= 3)
                     {
-                        if (i > 0) log("ボイス生成待ち: " + ready + "/" + voices.Count + "件が実尺確定(" + (i * 200) + "ms)");
+                        log(Tr.T("log.wait.settled", ready, voices.Count, i * 200));
                         return;
                     }
                     await System.Threading.Tasks.Task.Delay(200);
-                    // 一時停止・停止はここでも見る(ボイス生成待ちは最大20秒あり、待つ間に止めたい)
-                    if (control != null) await control.CheckpointAsync("ボイス生成待ち " + ready + "/" + voices.Count);
+                    // 一時停止・停止はここでも見る(ボイス生成待ちは最大60秒あり、待つ間に止めたい)
+                    if (control != null) await control.CheckpointAsync(Tr.T("log.wait.progress", ready, voices.Count));
                 }
-                log("ボイス生成待ち: タイムアウト(実尺が揃わないまま続行)");
+                var notReady = voices.Count(v => VoiceReadiness(v) <= 0);
+                log(Tr.T("log.wait.timeout", notReady, voices.Count));
             }
             catch (ImportStoppedException) { throw; }
-            catch (Exception ex) { log("ボイス生成待ちで例外(続行): " + ex.Message); }
+            catch (Exception ex) { log(Tr.T("log.wait.exception", ex.Message)); }
+        }
+
+        /// <summary>確定したボイスの尺を、公式の台本編集と同じ ItemEx.ResetLength で取り直す。
+        /// Length が推定や途中の値のまま残っていると、再配置が1フレームや過大な尺で詰めてしまう。</summary>
+        static void RefreshVoiceLengths(Timeline timeline, HashSet<object> preExisting, Action<string> log)
+        {
+            try
+            {
+                var voices = VoiceItemsOf(timeline).Where(v => !preExisting.Contains(v)).ToList();
+                if (voices.Count == 0) return;
+                var videoInfo = GetPropValue(timeline, "VideoInfo");
+                if (videoInfo == null)
+                {
+                    log(Tr.T("log.reset.noInfo"));
+                    return;
+                }
+                var changed = 0;
+                var failed = 0;
+                foreach (var v in voices)
+                {
+                    if (VoiceReadiness(v) <= 0) continue; // 未確定のものは触らない
+                    try
+                    {
+                        var lp = FindProp(v.GetType(), "Length");
+                        var before = lp != null ? Convert.ToInt32(lp.GetValue(v)) : 0;
+                        if (!ResetVoiceLength(v, videoInfo, log)) { failed++; continue; }
+                        var after = lp != null ? Convert.ToInt32(lp.GetValue(v)) : 0;
+                        if (after != before) changed++;
+                    }
+                    catch (Exception ex) { failed++; if (failed <= 2) log(Tr.T("log.reset.fail", ex.Message)); }
+                }
+                log(Tr.T("log.reset.done", voices.Count, changed, failed > 0 ? Tr.T("log.reset.failed", failed) : ""));
+            }
+            catch (Exception ex) { log(Tr.T("log.reset.exception", ex.Message)); }
         }
 
         /// <summary>timeline.Items のボイス(VoiceItem)を Frame 昇順に並べ、実尺(Length)で back-to-back に再配置。
@@ -1450,7 +1539,7 @@ namespace KakiniwaYmm4Import
             try
             {
                 var itemsEnum = GetPropValue(timeline, "Items") as System.Collections.IEnumerable;
-                if (itemsEnum == null) { log("再配置: Items が取得できずスキップ"); return false; }
+                if (itemsEnum == null) { log(Tr.T("log.relayout.noItems")); return false; }
                 // 今回の取り込みで置いたアイテムだけを対象にする(preExisting=取り込み前の既存分)。
                 // 全件を対象にすると、既存プロジェクトのボイスまで back-to-back に再整列し、
                 // contentEnd 打ち切りで既存アイテムを切り詰めてしまう。
@@ -1478,7 +1567,7 @@ namespace KakiniwaYmm4Import
                 // 実尺が妥当か。半数以上が 1 フレーム以下なら合成未完了とみなし据え置く(安全側)。
                 if (voices.Count(v => v.len > 1) < (voices.Count + 1) / 2)
                 {
-                    log("再配置: ボイス実尺が未確定(音声合成待ち?)のため据え置き");
+                    log(Tr.T("log.relayout.unsettled"));
                     return false;
                 }
 
@@ -1665,13 +1754,11 @@ namespace KakiniwaYmm4Import
                     }
                 }
 
-                log("実尺で再配置: ボイス " + voices.Count + "件(移動 " + moved + ")・他 " + others
-                    + "件移動/" + stretched + "件伸縮/" + clamped + "件終端打切/" + laneClamped + "件レーン内打切/"
-                    + swapClamped + "件入替打切・表情実尺 " + faceSynced + "件・立ち絵切替終端 " + portraitSynced
-                    + "件・レーン集約 " + relaned + "件・gap " + gap + "f");
+                log(Tr.T("log.relayout.done", voices.Count, moved, others, stretched, clamped, laneClamped,
+                    swapClamped, faceSynced, portraitSynced, relaned, gap));
                 return true;
             }
-            catch (Exception ex) { log("再配置失敗(据え置き): " + ex.Message); return false; }
+            catch (Exception ex) { log(Tr.T("log.relayout.fail", ex.Message)); return false; }
         }
     }
 }
