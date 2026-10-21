@@ -60,6 +60,8 @@ namespace KakiniwaYmm4Import
 
         readonly Func<string, int?> fixedOf;
         readonly List<string> order = new List<string>();
+        // ★登録済みの判定は索引で(List.Contains だとキーの数の二乗になる・2026-10-20c)
+        readonly HashSet<string> ordered = new HashSet<string>();
         readonly Dictionary<string, int> lanes = new Dictionary<string, int>();
         readonly HashSet<int> taken = new HashSet<int>();
         int next;
@@ -70,7 +72,7 @@ namespace KakiniwaYmm4Import
         /// <summary>レーンのキーを、重なり順(上から)に登録する。同じキーは1回だけ数える。</summary>
         public void Add(string key)
         {
-            if (!order.Contains(key) && !lanes.ContainsKey(key)) order.Add(key);
+            if (!lanes.ContainsKey(key) && ordered.Add(key)) order.Add(key);
         }
 
         /// <summary>登録が終わったら呼ぶ。固定番号を先に確保し、残りを空いている番号へ詰める。</summary>

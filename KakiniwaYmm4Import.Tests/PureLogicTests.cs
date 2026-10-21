@@ -149,6 +149,17 @@ namespace KakiniwaYmm4Import.Tests
         }
 
         [Fact]
+        public void 絶対パスのSVGも同梱と同じく許可()
+        {
+            // 書き庭は SVG を画像素材として受け付け、YMM4 も SVG を描ける。同梱(相対パス)では通るのに
+            // 同梱しない(絶対パス)だけスキップされる食い違いを作らない(2026-10-21 18周目)
+            var svg = Path.Combine(dir, "assets", "logo.svg");
+            File.WriteAllText(svg, "<svg xmlns='http://www.w3.org/2000/svg'/>");
+            Assert.Equal(Path.GetFullPath(svg), R(dir, svg));
+            Assert.Equal(Path.GetFullPath(svg), R(dir, "assets/logo.svg"));
+        }
+
+        [Fact]
         public void 絶対パスでも素材以外の拡張子はnull()
             => Assert.Null(R(dir, Path.Combine(dir, "secret.txt")));
 
@@ -160,12 +171,13 @@ namespace KakiniwaYmm4Import.Tests
         }
 
         [Fact]
-        public void パック内の相対パスには拡張子制限がない()
+        public void パック内の相対パスにも素材の拡張子だけを許す()
         {
-            // 仕様固定: 拡張子の許可リスト(AbsAllowedExts)が効くのは絶対パス参照のみ。
-            // パック内(packDir 配下に封じ込め済み)は信頼境界の内側なので、.txt のような
-            // 素材外の拡張子でも相対パスなら解決される。これを絞る変更は仕様変更として扱う。
-            Assert.Equal(Path.GetFullPath(Path.Combine(dir, "secret.txt")), R(dir, "secret.txt"));
+            // 仕様変更(2026-10-22 監査): 拡張子の許可リスト(AbsAllowedExts)を相対パスにもかける。
+            // パックは第三者から受け取ることもあり、素材らしくない種類(.txt など)を引き込ませない。
+            Assert.Null(R(dir, "secret.txt"));
+            File.WriteAllText(Path.Combine(dir, "bg.png"), "x");
+            Assert.Equal(Path.GetFullPath(Path.Combine(dir, "bg.png")), R(dir, "bg.png"));
         }
     }
 
@@ -1249,7 +1261,7 @@ namespace KakiniwaYmm4Import.Tests
             var p = Load();
             Assert.Equal(1, p.Version);
             Assert.Equal("0.2.2", p.PluginMin);          // 書き庭の PLUGIN_MIN_VERSION
-            Assert.Equal("0.5.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
+            Assert.Equal("0.6.0", p.PluginLatest);        // 書き庭の PLUGIN_LATEST_VERSION
             Assert.Equal(PackSchema.PluginVersion, p.PluginLatest); // 実版と案内が一致
             Assert.Equal("つばめ珈琲", p.Title);
             Assert.Equal("朝のつばめ", p.Episode);
@@ -1891,6 +1903,14 @@ namespace KakiniwaYmm4Import.Tests
             // ui.language は「間違った言語になった人でも探せる」よう、わざと日英併記にしている
             var bad = Strings.En.Where(kv => kv.Key != "ui.language" && HasJapanese(kv.Value)).Select(kv => kv.Key).ToList();
             Assert.True(bad.Count == 0, "日本語が残っている英語の文言: " + string.Join(", ", bad));
+        }
+
+        [Fact]
+        public void スペイン語の辞書に日本語が残っていない()
+        {
+            // 新しく足した文言を訳し忘れて日本語の値を写すと、キーの揃いのテストは通ってしまう(2026-10-22)
+            var bad = Strings.Es.Where(kv => kv.Key != "ui.language" && HasJapanese(kv.Value)).Select(kv => kv.Key).ToList();
+            Assert.True(bad.Count == 0, "日本語が残っているスペイン語の文言: " + string.Join(", ", bad));
         }
 
         [Fact]

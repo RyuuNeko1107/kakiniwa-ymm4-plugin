@@ -56,6 +56,10 @@ namespace KakiniwaYmm4Import
         /// 既定の false は公式の台本編集と同じ手順(タイムラインの外で作り、ResetLength で実尺を確定してから置く)。
         /// 窓には出さない保険の設定(うまくいかないときに kakiniwa-import.json で切り替える)</summary>
         public bool LegacyVoicePath { get; set; } = false;
+        /// <summary>セリフのボイスを作る同時数。0=自動(既定。配置の前に全部を並列で作る。同時数は
+        /// エンジンの種類ごとの表に従う・VoicePrefetch.cs)/ 1=1行ずつ(従来の、作っては置くの繰り返し)/
+        /// 2以上=同時数の上限。窓には出さない保険の設定(kakiniwa-import.json で切り替える)</summary>
+        public int VoiceConcurrency { get; set; } = KakiniwaYmm4Import.VoiceConcurrency.Auto;
         /// <summary>窓の表示言語: auto(YMM4に合わせる・既定) / 言語コード(ja・en・lang/ に置いた言語)</summary>
         public string Language { get; set; } = "auto";
         /// <summary>開始位置: "zero"=先頭(0秒) / "cursor"=タイムラインのカーソル位置</summary>
@@ -72,6 +76,9 @@ namespace KakiniwaYmm4Import
         public Dictionary<string, int> AssetLayers { get; set; } = new Dictionary<string, int>();
         /// <summary>素材の種類ごとのレイヤー固定: bg / bgm / se / stage / prop-slot / effect / window → 番号。無い種類は自動</summary>
         public Dictionary<string, int> KindLayers { get; set; } = new Dictionary<string, int>();
+        /// <summary>書き庭が PSD のサイドカーへ書いた表情プリセットの記録(PSD の絶対パス|名前)。
+        /// 同名のプリセットは、ここに載っているものだけ置き換える(利用者が YMM4 で作ったものを消さない)</summary>
+        public List<string> OwnedPresets { get; set; } = new List<string>();
     }
 
     public static class SettingsStore

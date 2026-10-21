@@ -36,14 +36,117 @@ namespace KakiniwaYmm4Import
                     foreach (var e in p.Expressions) { if (seen.Add(e.Id)) all.Add(e); }
             return all;
         }
-        public static async System.Threading.Tasks.Task RegisterExpressionPresets(Pack pack, string packDir,
+        /// <summary>プリセットの書き先1つ(PSD 1つ)。書く前に利用者へ一覧で見せて確認を取る。</summary>
+        public sealed class PresetTarget
+        {
+            public string PsdPath = "";
+            /// <summary>記録用の説明(キャラ名(既定/立ち絵 X → YMM4キャラ))</summary>
+            public string Label = "";
+            public List<PackExpression> Expressions = new List<PackExpression>();
+            public CharacterChoice Choice = null!;
+            /// <summary>この書き先を決めた取り込み窓の行(キャラ id か「キャラid/立ち絵id」)</summary>
+            public string MapKey = "";
+            /// <summary>パックに同梱された PSD か(false=利用者の PC にある YMM4 キャラの PSD)</summary>
+            public bool InPack;
+        }
+
+        /// <summary>立ち絵の表情プリセットの書き先の決め方(純ロジック)。</summary>
+        internal enum PortraitPresetKind
+        {
+            /// <summary>取り込み窓の立ち絵の行で、基底と別の YMM4 キャラが選ばれている → そのキャラの PSD</summary>
+            RowSelection,
+            /// <summary>パックの ymm4Name だけが別キャラを指している → 書かない(行で選んでもらう)</summary>
+            NeedRowSelection,
+            /// <summary>既定の立ち絵 → 基底キャラの YMM4 登録 PSD</summary>
+            DefaultPsd,
+            /// <summary>同じキャラのまま PSD だけ差し替える立ち絵 → パック内のその PSD</summary>
+            InPackPsd,
+        }
+
+        /// <summary>立ち絵の表情プリセットをどこへ書くか。
+        /// ★パックの外の PSD(=利用者の PC にある別キャラの PSD)へは、利用者が窓の立ち絵の行で
+        /// 選んだときだけ書く。以前はパックの portraits[].ymm4Name だけで書き先が決まり、
+        /// 細工パックが他キャラのサイドカーの同名プリセットを消せた(2026-10-20c)。</summary>
+        internal static PortraitPresetKind DecidePortraitPresetTarget(
+            string? rowSelectedName, string baseName, string? packYmm4Name,
+            bool isDefaultPortrait, bool defaultPsdUsable)
+        {
+            if (!string.IsNullOrEmpty(rowSelectedName) && rowSelectedName != baseName)
+                return PortraitPresetKind.RowSelection;
+            if (string.IsNullOrEmpty(rowSelectedName) && !string.IsNullOrEmpty(packYmm4Name) && packYmm4Name != baseName)
+                return PortraitPresetKind.NeedRowSelection;
+            if (isDefaultPortrait && defaultPsdUsable) return PortraitPresetKind.DefaultPsd;
+            return PortraitPresetKind.InPackPsd;
+        }
+
+        /// <summary>この窓で利用者が選んだのではない割り当て(名前の一致で自動で付いた・前回の記憶で付いた)。
+        /// プリセットの書き先の確認で、パックの外の PSD に最初から印を付けない対象。</summary>
+        internal static HashSet<string> NotChosenInWindow(IEnumerable<string> autoPicked, IEnumerable<string> rememberedPicked)
+        {
+            var s = new HashSet<string>(autoPicked);
+            s.UnionWith(rememberedPicked);
+            return s;
+        }
+
+        /// <summary>書き先の確認で、最初から印を付けておくか。パック内の PSD は付ける。
+        /// パックの外の PSD は、その行を利用者が選んだとき(=名前の一致で自動で付いただけではない)だけ。</summary>
+        internal static bool PresetTargetCheckedByDefault(PresetTarget t, ISet<string> autoPicked)
+            => t.InPack || !autoPicked.Contains(t.MapKey);
+
+        /// <summary>「書き庭が作ったプリセット」の記録のキー(PSD の絶対パス + 名前)。</summary>
+        internal static string OwnedPresetKey(string psdPath, string name)
+            => Path.GetFullPath(psdPath).ToLowerInvariant() + "|" + name;
+
+        /// <summary>この名前のプリセットを書いてよいか。同名が無ければ新規で書く。
+        /// 同名があるときは、書き庭が作った記録のあるものだけ置き換える
+        /// (利用者が YMM4 で作った同名のプリセットを黙って消さない・2026-10-20c)。</summary>
+        internal static bool MayWritePreset(string psdPath, string name,
+            ICollection<string> existingNames, ISet<string> owned)
+            => !existingNames.Contains(name) || owned.Contains(OwnedPresetKey(psdPath, name));
+
+        /// <summary>PSD のサイドカー(表情プリセットの保存先)の候補。
+        /// ★名前の付き方は「PSD名-ymm.json」と「PSD名.psd-ymm.json」の両方を候補にする
+        /// (YMM4 の実際の付け方は実機未確認。控えを取りこぼさない側に倒す)。</summary>
+        internal static List<string> SidecarCandidates(string psdPath)
+        {
+            var dir = Path.GetDirectoryName(Path.GetFullPath(psdPath)) ?? "";
+            return new List<string>
+            {
+                Path.Combine(dir, Path.GetFileNameWithoutExtension(psdPath) + "-ymm.json"),
+                Path.Combine(dir, Path.GetFileName(psdPath) + "-ymm.json"),
+            };
+        }
+
+        /// <summary>サイドカーとその控え(.bak)がリンク(シンボリックリンク・ジャンクション)なら true。
+        /// リンクのまま書く・写すと、書き込みがリンク先(パックの外)へ出る。</summary>
+        internal static bool SidecarIsLinked(string psdPath)
+        {
+            foreach (var s in SidecarCandidates(psdPath))
+            {
+                if (IsLink(s) || IsLink(s + ".bak")) return true;
+            }
+            return false;
+        }
+
+        /// <summary>書き換える前に、いまあるサイドカーを .bak へ写す。返り値=写した数。
+        /// 写せなければ例外(呼び出し側は書き込みをやめる)。</summary>
+        internal static int BackupSidecars(string psdPath)
+        {
+            var n = 0;
+            foreach (var s in SidecarCandidates(psdPath))
+            {
+                if (!File.Exists(s)) continue;
+                File.Copy(s, s + ".bak", true);
+                n++;
+            }
+            return n;
+        }
+
+        /// <summary>表情プリセットの書き先を集める(まだ何も書かない)。</summary>
+        internal static List<PresetTarget> PlanPresetTargets(Pack pack, string packDir,
             Dictionary<string, CharacterChoice> speakerMap, HashSet<string> only, Action<string> log)
         {
-            var presetType = FindLoadedType("YukkuriMovieMaker.Plugin.Tachie.Psd.PsdPreset");
-            if (presetType == null) { log(Tr.T("log.psd.noPresetType")); return; }
-            LogYmm4VersionIfUntested(log);
-            var total = 0;
-            List<CharacterChoice>? ymm4Chars = null; // 必要になったら一度だけ取得
+            var targets = new List<PresetTarget>();
             foreach (var chara in pack.Characters)
             {
                 if (!only.Contains(chara.Name)) continue;
@@ -63,7 +166,6 @@ namespace KakiniwaYmm4Import
                 //   重複IDの除去も同じPSD内だけで行う。
                 // 注: 書き庭は characters[].expressions(flat)へ立ち絵側の表情も合流させて送る。
                 //     flat をそのまま既定PSDへ書くと混入が残るため、立ち絵が抱えるIDを除外する。
-                var groups = new List<Tuple<string, string, List<PackExpression>>>(); // (psdPath, 説明, 表情)
                 var claimed = new HashSet<string>();
                 if (chara.Portraits != null)
                     foreach (var p in chara.Portraits)
@@ -72,10 +174,15 @@ namespace KakiniwaYmm4Import
                 var flat = chara.Expressions
                     .Where(x => x.Psd != null && x.Psd.Layers.Count > 0 && !claimed.Contains(x.Id))
                     .ToList();
+                var defaultPsdUsable = !string.IsNullOrEmpty(defaultPsd) && File.Exists(defaultPsd);
                 if (flat.Count > 0)
                 {
-                    if (!string.IsNullOrEmpty(defaultPsd) && File.Exists(defaultPsd))
-                        groups.Add(Tuple.Create(defaultPsd!, "既定", flat));
+                    if (defaultPsdUsable)
+                        targets.Add(new PresetTarget
+                        {
+                            PsdPath = defaultPsd!, Label = chara.Name + "(既定→" + choice.Name + ")",
+                            Expressions = flat, Choice = choice, MapKey = chara.Id, InPack = false,
+                        });
                     else
                         log(Tr.T("log.psd.noTachie", chara.Name, choice.Name));
                 }
@@ -88,37 +195,34 @@ namespace KakiniwaYmm4Import
                         if (exprsP.Count == 0) continue;
                         string? target;
                         var desc = "立ち絵 " + p.Id;
+                        var mapKey = chara.Id;
+                        var inPack = false;
                         // 立ち絵ごとの割り当て(取り込みダイアログの立ち絵行。複合キー charId/portraitId)を
                         // 最優先。基底キャラと同じ選択なら従来の Default/サイドカー経路へ。
                         CharacterChoice? selP;
                         var explicitSel = speakerMap.TryGetValue(chara.Id + "/" + p.Id, out selP)
                             && selP != null && selP.Model != null ? selP : null;
-                        if (explicitSel != null && explicitSel.Name != choice.Name)
+                        var kind = DecidePortraitPresetTarget(explicitSel != null ? explicitSel.Name : null,
+                            choice.Name, p.Ymm4Name, p.Default, defaultPsdUsable);
+                        if (kind == PortraitPresetKind.RowSelection)
                         {
-                            var ipS = GetPropValue(explicitSel.Model!, "TachieDefaultItemParameter");
+                            var ipS = GetPropValue(explicitSel!.Model!, "TachieDefaultItemParameter");
                             target = ipS != null ? GetPropValue(ipS, "FilePath") as string : null;
                             desc += " → " + explicitSel.Name;
+                            mapKey = chara.Id + "/" + p.Id;
                             if (string.IsNullOrEmpty(target) || !File.Exists(target))
                             {
                                 log(Tr.T("log.psd.noHostPsd", chara.Name, desc));
                                 continue;
                             }
                         }
-                        else if (explicitSel == null && !string.IsNullOrEmpty(p.Ymm4Name))
+                        else if (kind == PortraitPresetKind.NeedRowSelection)
                         {
-                            // 別のYMM4キャラに割り当てた立ち絵: そのキャラの既定PSDへ
-                            if (ymm4Chars == null) ymm4Chars = GetYmm4Characters(_ => { });
-                            var m = ymm4Chars.FirstOrDefault(c => c.Name == p.Ymm4Name && c.Model != null);
-                            var ip = m != null ? GetPropValue(m.Model!, "TachieDefaultItemParameter") : null;
-                            target = ip != null ? GetPropValue(ip, "FilePath") as string : null;
-                            desc += " → " + p.Ymm4Name;
-                            if (string.IsNullOrEmpty(target) || !File.Exists(target))
-                            {
-                                log(Tr.T("log.psd.noHostPsd", chara.Name, desc));
-                                continue;
-                            }
+                            // ★パックの ymm4Name だけでは、パックの外(別キャラ)の PSD に書かない
+                            log(Tr.T("log.psd.needRow", chara.Name, desc, p.Ymm4Name));
+                            continue;
                         }
-                        else if (p.Default && !string.IsNullOrEmpty(defaultPsd) && File.Exists(defaultPsd))
+                        else if (kind == PortraitPresetKind.DefaultPsd)
                         {
                             // 既定の立ち絵(割り当て先の指定なし)= このキャラのYMM4登録PSDへ
                             target = defaultPsd;
@@ -140,17 +244,45 @@ namespace KakiniwaYmm4Import
                                 log(Tr.T("log.psd.noPsd", chara.Name, desc));
                                 continue;
                             }
+                            inPack = true;
                         }
-                        groups.Add(Tuple.Create(target!, desc, exprsP));
+                        targets.Add(new PresetTarget
+                        {
+                            PsdPath = target!, Label = chara.Name + "(" + desc + "→" + choice.Name + ")",
+                            Expressions = exprsP, Choice = choice, MapKey = mapKey, InPack = inPack,
+                        });
                     }
                 }
-                foreach (var g in groups)
-                {
-                    var seen = new HashSet<string>();
-                    var exprs = g.Item3.Where(x => seen.Add(x.Id)).ToList();
-                    total += await RegisterPresetsInto(presetType, g.Item1, exprs, choice,
-                        chara.Name + "(" + g.Item2 + "→" + choice.Name + ")", log);
-                }
+            }
+            foreach (var t in targets)
+            {
+                // 重複IDの除去は同じPSD内だけで行う
+                var seen = new HashSet<string>();
+                t.Expressions = t.Expressions.Where(x => seen.Add(x.Id)).ToList();
+            }
+            return targets;
+        }
+
+        /// <param name="confirm">書く前に書き先の一覧を利用者に見せ、書いてよいものだけを返す
+        /// (null=取りやめ)。</param>
+        /// <param name="owned">書き庭が作ったプリセットの記録(OwnedPresetKey)。書いたものを足す。</param>
+        public static async System.Threading.Tasks.Task RegisterExpressionPresets(Pack pack, string packDir,
+            Dictionary<string, CharacterChoice> speakerMap, HashSet<string> only, Action<string> log,
+            Func<IReadOnlyList<PresetTarget>, ICollection<PresetTarget>?> confirm, ISet<string> owned)
+        {
+            var presetType = FindLoadedType("YukkuriMovieMaker.Plugin.Tachie.Psd.PsdPreset");
+            if (presetType == null) { log(Tr.T("log.psd.noPresetType")); return; }
+            LogYmm4VersionIfUntested(log);
+            var targets = PlanPresetTargets(pack, packDir, speakerMap, only, log);
+            if (targets.Count == 0) { log(Tr.T("log.psd.none")); return; }
+            // ★書く前に、書き先の PSD を一覧で見せて確認を取る(2026-10-20c)
+            var approved = confirm(targets);
+            if (approved == null || approved.Count == 0) { log(Tr.T("log.psd.cancelled")); return; }
+            var total = 0;
+            foreach (var t in targets)
+            {
+                if (!approved.Contains(t)) continue;
+                total += await RegisterPresetsInto(presetType, t.PsdPath, t.Expressions, t.Choice, t.Label, owned, log);
             }
             log(total > 0
                 ? Tr.T("log.psd.done", total)
@@ -159,8 +291,10 @@ namespace KakiniwaYmm4Import
 
         /// <summary>表情プリセット一式を、指定PSDのサイドカー(-ymm.json)へ登録する。返り値=登録件数</summary>
         static async System.Threading.Tasks.Task<int> RegisterPresetsInto(Type presetType, string psdPath,
-            List<PackExpression> exprs, CharacterChoice choice, string label, Action<string> log)
+            List<PackExpression> exprs, CharacterChoice choice, string label, ISet<string> owned, Action<string> log)
         {
+            // ★サイドカーや控えがリンクなら書かない(書き込みがリンク先へ出る)
+            if (SidecarIsLinked(psdPath)) { log(Tr.T("log.psd.linked", label)); return 0; }
             var settings = LoadPsdFileSettings(psdPath, log);
             if (settings == null) return 0;
             // Presets は ImmutableList のため、作業用リストで組み直してプロパティごと差し替える
@@ -168,13 +302,20 @@ namespace KakiniwaYmm4Import
             if (GetPropValue(settings, "Presets") is System.Collections.IEnumerable existingList)
                 foreach (var x in existingList)
                     if (x != null) working.Add(x);
+            var existingNames = new HashSet<string>(working
+                .Select(x => GetPropValue(x, "Name") as string).Where(n => n != null).Select(n => n!));
             var added = 0;
             var newOnes = new List<object>();
+            var written = new List<string>();
             foreach (var expr in exprs)
             {
                 var name = expr.Label ?? expr.Id;
-                // 同名プリセットは置き換え
-                working.RemoveAll(x => GetPropValue(x, "Name") as string == name);
+                // ★同名プリセットの置き換えは、書き庭が作った記録のあるものだけ
+                if (!MayWritePreset(psdPath, name, existingNames, owned))
+                {
+                    log(Tr.T("log.psd.keptForeign", label, name));
+                    continue;
+                }
                 var preset = Activator.CreateInstance(presetType);
                 if (preset == null) continue;
                 var nameProp = presetType.GetProperty("Name");
@@ -187,10 +328,22 @@ namespace KakiniwaYmm4Import
                 var layersProp = presetType.GetProperty("Layers");
                 if (layersProp != null && layersProp.CanWrite)
                     layersProp.SetValue(preset, MakeStringList(layersProp.PropertyType, state.Item1));
+                // 置き換えは新しいものが組めてから(組めずに古いものだけ消える、を起こさない)
+                working.RemoveAll(x => GetPropValue(x, "Name") as string == name);
+                newOnes.RemoveAll(x => GetPropValue(x, "Name") as string == name);
                 newOnes.Add(preset);
+                written.Add(name);
                 added++;
             }
+            if (newOnes.Count == 0) return 0; // 書くものが無ければファイルに触らない
             working.AddRange(newOnes);
+            // ★書き換える前に、いまのサイドカーを .bak に写す。写せなければ書かない
+            try { BackupSidecars(psdPath); }
+            catch (Exception ex)
+            {
+                log(Tr.T("log.psd.backupFail", label, ex.Message));
+                return 0;
+            }
             try
             {
                 // ImmutableList<PsdPreset> を組み立てて Presets を差し替え
@@ -212,6 +365,7 @@ namespace KakiniwaYmm4Import
                 var save = FindMethodByShape(settings.GetType(), "SaveFromPsdFilePath", new[] { typeof(string) });
                 if (save == null) { log(Tr.T("log.psd.noSave", label)); return 0; }
                 save.Invoke(settings, new object?[] { psdPath });
+                foreach (var nm in written) owned.Add(OwnedPresetKey(psdPath, nm));
                 log(Tr.T("log.psd.saved", label, added, Path.GetFileNameWithoutExtension(psdPath)));
                 return added;
             }
@@ -247,9 +401,22 @@ namespace KakiniwaYmm4Import
         /// 停止すると ImportStoppedException を投げて抜ける。置いた分は残る。</param>
         public static async System.Threading.Tasks.Task Run(Pack pack, string packDir,
             Dictionary<string, CharacterChoice> speakerMap,
-            ImportSettings settings, Action<string> log, ImportControl? control)
+            ImportSettings settings, Action<string> log, ImportControl? control,
+            IProgress<ImportProgressReport>? progress = null, Func<string, bool>? confirm = null)
         {
             control ??= new ImportControl();
+            // 進捗バーと残り時間の目安(ImportProgress.cs)。progress は UI スレッドへ渡す Progress<T> を想定
+            var progressWatch = System.Diagnostics.Stopwatch.StartNew();
+            Action<ImportStage, double, int, int, double?> report = (st, f, d, t, rem) =>
+            {
+                if (progress == null) return;
+                progress.Report(new ImportProgressReport
+                {
+                    Stage = st, Fraction = ImportProgressMath.Overall(st, f), Done = d, Total = t,
+                    RemainingSeconds = rem, ElapsedSeconds = progressWatch.Elapsed.TotalSeconds,
+                });
+            };
+            report(ImportStage.Prepare, 0, 0, 0, null);
             LogYmm4VersionIfUntested(log);
             var timeline = FindActiveTimeline(log);
             if (timeline == null) return;
@@ -272,9 +439,18 @@ namespace KakiniwaYmm4Import
             var voiceVideoInfo = GetPropValue(timeline, "VideoInfo");
             // 公式方式で1本も作れなかった(声が出ない・版の違い)ときは、残りの行も待たされないよう従来の方式へ切り替える
             var officialVoiceBroken = false;
+            // 取り込み全体の所要時間(ログの最後に出す。1行ずつ/並列の比較と、遅いという報告の手がかり)
+            var runWatch = System.Diagnostics.Stopwatch.StartNew();
+            // 段階ごとの所要時間(ログの最後に長い順で出す)
+            var stages = new StageTimer();
+            long loopVoiceMs = 0; // 配置のループの中で音声を作るのにかかった時間(1行ずつ・作り直し)
+            var voiceLines = 0;
+            // 本命(公式の台本と同じ手順)で作り、生成の完了と実尺の確定まで済んでいるボイス
+            var officialVoices = new HashSet<object>();
             var projW = ReadVideoInfoValue(timeline, "Width", 1920, log);
             var projH = ReadVideoInfoValue(timeline, "Height", 1080, log);
-            Func<double, int> F = sec => (int)Math.Round(sec * fps); // 尺(長さ)用
+            // ★飽和させる。(int) への素の変換は、あふれると負の値になる(2026-10-20c)
+            Func<double, int> F = sec => SecondsToFrames(sec, fps); // 尺(長さ)用
 
             // 配置先(設定): 開始レイヤーのシフト+開始フレーム(先頭 or カーソル位置)
             var layerOffset = Math.Max(0, settings.BaseLayer);
@@ -290,7 +466,7 @@ namespace KakiniwaYmm4Import
             }
             if (layerOffset > 0 || frameOffset > 0)
                 log(Tr.T("log.dest", layerOffset, frameOffset > 0 ? Tr.T("log.dest.frame", frameOffset) : Tr.T("log.dest.start")));
-            Func<double, int> FrameAt = sec => F(sec) + frameOffset; // 開始位置用
+            Func<double, int> FrameAt = sec => AddFramesSaturating(F(sec), frameOffset); // 開始位置用
             Func<int, int> L = n => n + layerOffset;
 
             var evs = pack.Events;
@@ -323,17 +499,16 @@ namespace KakiniwaYmm4Import
             // 小物のレーン割り当て: 「時間が重ならない小物は同じレーンに畳む」(区間グラフの貪欲彩色)。
             // 退場を書いて終わる小物どうし(=入れ替わり)は1レーンに背中合わせで入り、名前ごとに別レーンへ
             // 散らばらない。逆に、退場が無く最後まで残る小物どうしは時間が重なるので別レーンへ分かれる。
+            // ★「次の停止・次の同種」は前もって1回の逆走査で引けるようにしておく。
+            //   イベントごとに後ろを全部なめると件数の二乗になり、大きなパックで固まる(2026-10-20c)
+            var nextPropStop = NextNamedStopStarts(evs, "prop_stop", totalEnd);
+            var nextWindowStop = NextStartOfTypes(evs, new[] { "window_stop" }, totalEnd);
+            var nextBg = NextStartOfTypes(evs, new[] { "bg" }, totalEnd);
+            var nextBgm = NextStartOfTypes(evs, new[] { "bgm", "bgm_stop" }, totalEnd);
+            var nextWindow = NextStartOfTypes(evs, new[] { "window" }, totalEnd);
             var propSlot = new Dictionary<int, int>(); // 小物イベントの index → スロット番号
             {
-                Func<int, double> propEnd = i =>
-                {
-                    var nm = evs[i].Asset!.Name;
-                    for (var j = i + 1; j < evs.Count; j++)
-                        if (evs[j].Type == "prop_stop"
-                            && (evs[j].Name == nm || (evs[j].Asset != null && evs[j].Asset!.Name == nm)))
-                            return evs[j].Start;
-                    return totalEnd;
-                };
+                Func<int, double> propEnd = i => nextPropStop[i];
                 var propIdx = new List<int>();
                 for (var i = 0; i < evs.Count; i++)
                     if (evs[i].Type == "prop" && assetExists(evs[i].Asset)) propIdx.Add(i);
@@ -466,35 +641,30 @@ namespace KakiniwaYmm4Import
             //   対応が切れる)。これでボイスと立ち絵/表情の CharacterName は常に一致し、
             //   実尺再配置の突き合わせも従来の CharacterName ベースのままで整合する。
             // 現在アクティブな立ち絵(複数立ち絵キャラのみ。単一立ち絵は null)
-            Func<string, PackPortrait?> activePortraitOf = (charId) =>
+            // state を引数にしているのは、ボイスを先にまとめて作るとき(下の「先に作る」)に、
+            // 配置のループと同じ規則で「その行の時点の立ち絵」を先読みするため。
+            Func<Dictionary<string, string>, string, PackPortrait?> portraitIn = (state, charId) =>
             {
                 // 保険込みの解決(FindPortrait): 書き庭側は id へ正規化して送るが、古い書き庭が
                 // 作ったパックでは表示名・YMM4名のまま入っていることがある。表情は元から両対応
                 // なので、立ち絵だけ id 限定で「切替が黙って効かない」になるのを防ぐ。
                 if (portraitsById.TryGetValue(charId, out var m)
-                    && activePortrait.TryGetValue(charId, out var pid))
+                    && state.TryGetValue(charId, out var pid))
                     return FindPortrait(m, pid);
                 return null;
             };
+            Func<string, PackPortrait?> activePortraitOf = (charId) => portraitIn(activePortrait, charId);
+            // セリフの話者割り当てと、アクティブ立ち絵の割り当て先キャラ(ボイスもこのキャラの声で作る)。
+            // Item1=取り込み窓で選んだキャラ(無ければ null)、Item2=resolveTachieHost の結果。
+            Func<PackEvent, PackPortrait?, Tuple<CharacterChoice?, Tuple<CharacterChoice, bool>?>> serifHostOf = (e, ap) =>
+            {
+                CharacterChoice? ch = null;
+                if (e.Speaker != null) speakerMap.TryGetValue(e.Speaker, out ch);
+                var host = ch != null && ch.Model != null ? resolveTachieHost(e.Speaker ?? "?", ch, ap) : null;
+                return Tuple.Create(ch, host);
+            };
 
             // 対応する停止イベント(prop_stop / window_stop)までの時刻を探す
-            Func<int, string, string?, double> nextStopOf = (i, stopType, name) =>
-            {
-                for (var j = i + 1; j < evs.Count; j++)
-                {
-                    if (evs[j].Type != stopType) continue;
-                    if (name == null || evs[j].Name == name
-                        || (evs[j].Asset != null && evs[j].Asset!.Name == name)) return evs[j].Start;
-                }
-                return totalEnd;
-            };
-
-            Func<int, string[], double> nextStartOfType = (i, types) =>
-            {
-                for (var j = i + 1; j < evs.Count; j++)
-                    if (types.Contains(evs[j].Type)) return evs[j].Start;
-                return totalEnd;
-            };
 
             var items = new List<BaseItem>();
             var skipped = new List<string>();
@@ -525,9 +695,150 @@ namespace KakiniwaYmm4Import
                 }
             };
 
+            // ── セリフのボイスを先にまとめて作る(公式の台本機能と同じ流れ)──
+            // 公式は全セリフのボイスを並列で作り終えてから順に並べる。以前の取り込みは1行ずつ
+            // 作るのを待ってから次へ進んでいたので、行数ぶん待ちが積み上がっていた。
+            // ここでは「作る」だけを先に済ませ、並べ方(位置・隙間・被りの調整)とログの順番は
+            // 下のループのまま変えない。作れなかった行は、ループの中で今までの経路で作り直す。
+            // 同時数はエンジンの種類ごと(VoicePrefetch.cs の表)。設定 VoiceConcurrency=1 で従来の1行ずつ。
+            Dictionary<int, VoiceJob>? prefetched = null;
+            stages.Lap(Tr.T("stage.prep"));
+            // セリフごとの声のキャラとエンジンを先に読む(先にまとめて作る・料金のかかる声の確認に使う)
+            var serifPlan = new List<VoiceJob>();
+            {
+                // 立ち絵の切替(portrait)はセリフの声のキャラを変えうるので、ループと同じ規則で先読みする。
+                // ★先読みが食い違っても、ループ側で「キャラ・本文・読み」を突き合わせ、違えば使わない。
+                var simPortrait = new Dictionary<string, string>(activePortrait);
+                for (var j = 0; j < evs.Count; j++)
+                {
+                    var e = evs[j];
+                    if (!EventFitsFrames(e.Start, e.Seconds, fps, frameOffset)) continue;
+                    if (e.Type == "portrait")
+                    {
+                        Dictionary<string, PackPortrait>? pm;
+                        if (e.Speaker != null && !string.IsNullOrEmpty(e.Name)
+                            && portraitsById.TryGetValue(e.Speaker, out pm) && pm != null)
+                        {
+                            var pr = FindPortrait(pm, e.Name!);
+                            if (pr != null) simPortrait[e.Speaker] = pr.Id;
+                        }
+                        continue;
+                    }
+                    if (e.Type != "serif" || string.IsNullOrWhiteSpace(e.Text) || e.NoVoice) continue;
+                    var vh = serifHostOf(e, portraitIn(simPortrait, e.Speaker ?? "?"));
+                    var vc = vh.Item2 != null ? vh.Item2.Item1 : vh.Item1;
+                    if (vc == null || vc.Model == null) continue;
+                    serifPlan.Add(new VoiceJob
+                    {
+                        Index = j, Model = vc.Model, Text = e.Text ?? "",
+                        Reading = string.IsNullOrEmpty(e.Reading) ? null : e.Reading,
+                        Engine = SpeakerTypeName(vc.Model),
+                    });
+                }
+            }
+            // ★料金・回数の制限がかかる声(オンライン)と、利用者の外部コマンドで作る声は、作る前に件数と文字数を見せて確かめる
+            //   (細工したパックで、利用者の課金枠を黙って使わせない・2026-10-22 監査)
+            var costly = CostlyVoiceSummary(serifPlan.Select(x => Tuple.Create(x.Engine, x.Text)));
+            if (costly.Count > 0)
+            {
+                var lines = string.Join("\n", costly.Select(c => Tr.T("confirm.costly.line", ShortTypeName(c.Item1), c.Item2, c.Item3)));
+                log(Tr.T("log.costly", lines.Replace("\n", " / ")));
+                if (confirm != null && !confirm(Tr.T("confirm.costly", lines)))
+                {
+                    log(Tr.T("log.costly.cancelled"));
+                    return;
+                }
+            }
+            if (VoiceConcurrency.UsePrefetch(settings.VoiceConcurrency, settings.LegacyVoicePath))
+            {
+                var jobs = serifPlan.ToList();
+                // 先に作らないエンジン(表に無い外部の音声プラグイン・SAPI の外部の声など)は、ループで今までどおり作る
+                var cpu0 = Environment.ProcessorCount;
+                var skippedEngines = jobs.Where(x => VoiceConcurrency.LimitFor(x.Engine, cpu0, settings.VoiceConcurrency) == VoiceConcurrency.NotPrefetched)
+                    .Select(x => x.Engine).Distinct().ToList();
+                if (skippedEngines.Count > 0)
+                {
+                    log(Tr.T("log.prefetch.skipEngine", string.Join(", ", skippedEngines.Select(ShortTypeName))));
+                    jobs = jobs.Where(x => VoiceConcurrency.LimitFor(x.Engine, cpu0, settings.VoiceConcurrency) != VoiceConcurrency.NotPrefetched).ToList();
+                }
+                if (jobs.Count > 1)
+                {
+                    var cpu = Environment.ProcessorCount;
+                    var globalLimit = VoiceConcurrency.GlobalLimit(cpu, settings.VoiceConcurrency);
+                    log(Tr.T("log.prefetch.start", jobs.Count, globalLimit, string.Join(", ",
+                        jobs.GroupBy(x => x.Engine).Select(g =>
+                            ShortTypeName(g.Key) + "×" + g.Count() + "(" + VoiceConcurrency.LimitFor(g.Key, cpu, settings.VoiceConcurrency) + ")"))));
+                    var pw = System.Diagnostics.Stopwatch.StartNew();
+                    // ★別スレッドで作るので、表示言語(ログの言語と YMM4 の文言)を UI スレッドに揃える
+                    var uiCulture = System.Globalization.CultureInfo.CurrentUICulture;
+                    var culture = System.Globalization.CultureInfo.CurrentCulture;
+                    // 残り時間の目安: 試しの1本目が終わった時点を基準に、そこからの速さで割り出す
+                    // (1本目は1本だけで作るので、並べて作る速さとは違う)
+                    var etaLock = new object();
+                    Tuple<int, double, double>? firstEta = null; // (何件目で, いつ, 目安の秒)
+                    double etaRefAt = -1;
+                    var maxLimit = jobs.Select(x => VoiceConcurrency.LimitFor(x.Engine, cpu, settings.VoiceConcurrency)).Max();
+                    var minSamples = ImportProgressMath.MinSamples(Math.Min(maxLimit, globalLimit), jobs.Count - 1);
+                    var etaWatch = System.Diagnostics.Stopwatch.StartNew();
+                    report(ImportStage.Voices, 0, 0, jobs.Count, null);
+                    Action<int, int> onVoiceDone = (d, t) =>
+                    {
+                        double? rem = null;
+                        lock (etaLock)
+                        {
+                            var now = etaWatch.Elapsed.TotalSeconds;
+                            if (d == 1 || etaRefAt < 0) etaRefAt = now;
+                            else rem = ImportProgressMath.EstimateRemaining(d - 1, now - etaRefAt, t - d, minSamples);
+                            if (rem != null && firstEta == null) firstEta = Tuple.Create(d, now, rem.Value);
+                        }
+                        report(ImportStage.Voices, (double)d / t, d, t, rem);
+                    };
+                    var res = await VoicePrefetch.RunAsync<VoiceJob, VoiceItem>(jobs,
+                        x => x.Engine,
+                        g => VoiceConcurrency.LimitFor(g, cpu, settings.VoiceConcurrency),
+                        globalLimit,
+                        x =>
+                        {
+                            x.Ran = true;
+                            System.Globalization.CultureInfo.CurrentUICulture = uiCulture;
+                            System.Globalization.CultureInfo.CurrentCulture = culture;
+                            // ★ログは行ごとに溜め、ループがその行に来たときに出す(並列の順で混ざらない)
+                            return CreateVoiceItemOfficial(x.Model, x.Text, x.Reading, voiceVideoInfo, s => x.Log.Add(s));
+                        },
+                        (d, t) => control.CheckpointAsync(Tr.T("log.prefetch.progress", d, t)),
+                        probeFirst: true,
+                        onVoiceDone);
+                    for (var k = 0; k < jobs.Count; k++)
+                    {
+                        jobs[k].Result = res.Items[k];
+                        jobs[k].Error = res.Errors[k];
+                    }
+                    log(Tr.T("log.prefetch.done", res.Items.Count(x => x != null), jobs.Count, pw.ElapsedMilliseconds));
+                    // 残り時間の目安の当たり具合(最初に出した目安と、実際に残っていた時間)
+                    if (firstEta != null)
+                        log(Tr.T("log.eta.check", firstEta.Item1, jobs.Count, Math.Round(firstEta.Item3, 1),
+                            Math.Round(etaWatch.Elapsed.TotalSeconds - firstEta.Item2, 1)));
+                    if (res.ProbeFailed) log(Tr.T("log.prefetch.probeFailed"));
+                    prefetched = jobs.ToDictionary(x => x.Index);
+                }
+            }
+            stages.Lap(Tr.T("stage.prefetch"));
+            // 配置のループの進み具合。先に作ったなら「配置」、1行ずつ作るなら「ボイスの作成」として数える
+            var serifTotal = evs.Count(e => e.Type == "serif" && !string.IsNullOrWhiteSpace(e.Text));
+            var loopWatch = System.Diagnostics.Stopwatch.StartNew();
+            var loopVoicesDone = 0;
+            Tuple<int, double, double>? loopFirstEta = null; // 1行ずつのときの残り時間の目安の当たり具合
+            if (prefetched == null && serifTotal > 0) report(ImportStage.Voices, 0, 0, serifTotal, null);
+
             for (var i = 0; i < evs.Count; i++)
             {
                 var ev = evs[i];
+                // ★フレームに直すとあふれる時刻のイベントは置かない(負の位置・長さで YMM4 に渡さない)
+                if (!EventFitsFrames(ev.Start, ev.Seconds, fps, frameOffset))
+                {
+                    skipped.Add(Tr.T("log.skipped.frameOverflow", ev.No));
+                    continue;
+                }
                 switch (ev.Type)
                 {
                     case "bg":
@@ -539,7 +850,7 @@ namespace KakiniwaYmm4Import
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf(assetKey("bg", ev.Asset!.Name)))),
                             // ★1フレーム未満にしない。@背景 が同時刻に並ぶと次の開始が同じで Length=0 になる
                             //   (小物・窓の退場は Math.Max(1, …) で守っているのに、ここだけ無かった)
-                            P("Length", Math.Max(1, F(nextStartOfType(i, new[] { "bg" }) - ev.Start))),
+                            P("Length", Math.Max(1, F(nextBg[i] - ev.Start))),
                             P("Remark", "背景: " + ev.Asset!.Name));
                         items.Add(item);
                         break;
@@ -551,7 +862,7 @@ namespace KakiniwaYmm4Import
                         var item = MakeItem(typeof(AudioItem), ev.Template, log, () => new AudioItem());
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf(assetKey("bgm", ev.Asset!.Name)))),
-                            P("Length", Math.Max(1, F(nextStartOfType(i, new[] { "bgm", "bgm_stop" }) - ev.Start))),
+                            P("Length", Math.Max(1, F(nextBgm[i] - ev.Start))),
                             P("Remark", "BGM: " + ev.Asset!.Name));
                         items.Add(item);
                         break;
@@ -601,11 +912,11 @@ namespace KakiniwaYmm4Import
                                             P("Length", Math.Max(1, F(ev.Start - placed.Item2))));
                                         tachieItems.Remove(pos.Speaker);
                                         tachiePlaced.Remove(pos.Speaker);
-                                        log(Tr.T("log.exit", pos.Speaker, ev.Start));
+                                        log(Tr.T("log.exit", LF(pos.Speaker), ev.Start));
                                     }
                                     else
                                     {
-                                        log(Tr.T("log.exit.skip", pos.Speaker));
+                                        log(Tr.T("log.exit.skip", LF(pos.Speaker)));
                                     }
                                     continue;
                                 }
@@ -631,7 +942,7 @@ namespace KakiniwaYmm4Import
                                     }
                                 }
                                 log(Tr.T("log.layoutUpdate",
-                                    pos.Speaker, pos.X, pos.Height != null ? pos.Height + "%" : Tr.T("log.default")));
+                                    LF(pos.Speaker), pos.X, pos.Height != null ? pos.Height + "%" : Tr.T("log.default")));
                             }
                         }
                         break;
@@ -669,8 +980,9 @@ namespace KakiniwaYmm4Import
                         var slotIndex = slotOf(charId); // 登場順: 0=左,1=右,…
 
                         // 話者割り当て(UIで選択済み)。無ければ ymm4Name → name → 台本表記の順
-                        CharacterChoice? choice = null;
-                        if (ev.Speaker != null) speakerMap.TryGetValue(ev.Speaker, out choice);
+                        var apSerif = activePortraitOf(charId);
+                        var hostOf = serifHostOf(ev, apSerif);
+                        var choice = hostOf.Item1;
                         var ymm4Name = (choice != null ? choice.Name : null)
                                        ?? (chara != null ? (chara.Ymm4Name ?? chara.Name) : null)
                                        ?? ev.SpeakerName ?? "";
@@ -680,11 +992,11 @@ namespace KakiniwaYmm4Import
                         //   声設定で生成する(音声話者も変えないと表情アイテム・口パクの対応が
                         //   切れる)。割り当てなし/解決不能なら従来どおり基底キャラ。
                         //   レーン(voice:charId)は書き庭キャラ単位のまま。
-                        var apSerif = activePortraitOf(charId);
-                        var serifHost = choice != null && choice.Model != null
-                            ? resolveTachieHost(charId, choice, apSerif) : null;
-                        var voiceChoice = serifHost != null ? serifHost.Item1 : choice;
+                        var serifHost = hostOf.Item2;
+                        var voiceChoice0 = serifHost != null ? serifHost.Item1 : choice;
                         var voiceName = serifHost != null ? serifHost.Item1.Name : ymm4Name;
+                        // ★セリフがファイルの場所の形の行は、声を作らない(YMM4 がその場所の音声を読み込むため)
+                        var voiceChoice = ev.NoVoice ? null : voiceChoice0;
 
                         // 本命: 公式の台本編集と同じ手順。ボイスをタイムラインの外で作り(生成の完了を待つ)、
                         // ResetLength で実尺を確定してから、こちらで位置を決めて置く。
@@ -693,11 +1005,45 @@ namespace KakiniwaYmm4Import
                         VoiceItem? voice = null;
                         var addedByModel = false;
                         var readingApplied = false;
-                        if (!settings.LegacyVoicePath && !officialVoiceBroken && voiceChoice != null && voiceChoice.Model != null)
+                        var voiceWatch = System.Diagnostics.Stopwatch.StartNew();
+                        voiceLines++;
+                        // 先にまとめて作った分があれば使う(作れなかった行・食い違った行は下の今までの経路へ)
+                        var useOneByOne = true;
+                        if (prefetched != null && voiceChoice != null && voiceChoice.Model != null)
+                        {
+                            VoiceJob? pj;
+                            prefetched.TryGetValue(i, out pj);
+                            var keyMatches = pj != null && ReferenceEquals(pj.Model, voiceChoice.Model)
+                                && pj.Text == (ev.Text ?? "")
+                                && pj.Reading == (string.IsNullOrEmpty(ev.Reading) ? null : ev.Reading);
+                            if (pj != null && pj.Ran)
+                            {
+                                foreach (var line in pj.Log) log(line);
+                                if (pj.Error != null)
+                                    log(Tr.T("log.i.officialFail", FirstChars(SingleLine(pj.Text), 12), pj.Error.Message));
+                            }
+                            switch (VoicePrefetch.Decide(pj != null && pj.Ran, keyMatches, pj != null && pj.Result != null))
+                            {
+                                case PrefetchUse.UseItem:
+                                    voice = pj!.Result;
+                                    readingApplied = !string.IsNullOrEmpty(ev.Reading);
+                                    officialVoices.Add(voice!);
+                                    useOneByOne = false;
+                                    break;
+                                case PrefetchUse.RetryOneByOne:
+                                    log(Tr.T("log.prefetch.retry", FirstChars(SingleLine(ev.Text ?? ""), 12)));
+                                    break;
+                                case PrefetchUse.Mismatch:
+                                    log(Tr.T("log.prefetch.mismatch", FirstChars(SingleLine(ev.Text ?? ""), 12)));
+                                    break;
+                            }
+                        }
+                        if (useOneByOne && !settings.LegacyVoicePath && !officialVoiceBroken && voiceChoice != null && voiceChoice.Model != null)
                         {
                             voice = await CreateVoiceItemOfficial(voiceChoice.Model, ev.Text ?? "",
                                 string.IsNullOrEmpty(ev.Reading) ? null : ev.Reading, voiceVideoInfo, log);
                             readingApplied = voice != null && !string.IsNullOrEmpty(ev.Reading);
+                            if (voice != null) officialVoices.Add(voice);
                             if (voice == null)
                             {
                                 officialVoiceBroken = true;
@@ -742,6 +1088,18 @@ namespace KakiniwaYmm4Import
                             SetProps(voice, log, P("Frame", FrameAt(ev.Start)), P("Layer", L(laneOf("voice:" + charId))));
                             items.Add(voice);
                         }
+                        loopVoiceMs += voiceWatch.ElapsedMilliseconds;
+                        loopVoicesDone++;
+                        if (prefetched == null)
+                        {
+                            var remLoop = ImportProgressMath.EstimateRemaining(loopVoicesDone, loopWatch.Elapsed.TotalSeconds,
+                                serifTotal - loopVoicesDone, ImportProgressMath.MinSamples(1, serifTotal));
+                            if (remLoop != null && loopFirstEta == null && loopVoicesDone < serifTotal)
+                                loopFirstEta = Tuple.Create(loopVoicesDone, loopWatch.Elapsed.TotalSeconds, remLoop.Value);
+                            report(ImportStage.Voices, (double)loopVoicesDone / Math.Max(1, serifTotal), loopVoicesDone, serifTotal, remLoop);
+                        }
+                        else if (loopVoicesDone % 20 == 0)
+                            report(ImportStage.Place, 0.5 * loopVoicesDone / Math.Max(1, serifTotal), loopVoicesDone, serifTotal, null);
                         if (voice != null && !readingApplied && !string.IsNullOrEmpty(ev.Reading))
                             SetProps(voice, log, P("Pronounce", ev.Reading!));
                         // 台本に書かれた「間」を覚えておく(実尺での再配置で使う)
@@ -759,7 +1117,7 @@ namespace KakiniwaYmm4Import
                                 if (host == null)
                                 {
                                     tachieUnavailable.Add(charId);
-                                    log(Tr.T("log.tachie.noHost", apTachie != null ? apTachie.Id : "?", PortraitAssignedName(apTachie)));
+                                    log(Tr.T("log.tachie.noHost", apTachie != null ? LF(apTachie.Id) : "?", LF(PortraitAssignedName(apTachie))));
                                 }
                                 else
                                 {
@@ -837,7 +1195,7 @@ namespace KakiniwaYmm4Import
                                 var layerIds = packExpr?.Psd?.LayerIds;
                                 if (layers == null || layers.Count == 0)
                                 {
-                                    log(Tr.T("log.face.noLayers", ev.Expression));
+                                    log(Tr.T("log.face.noLayers", LF(ev.Expression)));
                                 }
                                 else
                                 {
@@ -862,7 +1220,7 @@ namespace KakiniwaYmm4Import
                                     var hostF = serifHost;
                                     if (hostF == null)
                                     {
-                                        log(Tr.T("log.face.noHost", ev.Expression));
+                                        log(Tr.T("log.face.noHost", LF(ev.Expression)));
                                     }
                                     else
                                     {
@@ -910,11 +1268,10 @@ namespace KakiniwaYmm4Import
                         var path = ResolveAsset(packDir, ev.Asset, skipped, ev);
                         if (path == null) break;
                         var isWindow = ev.Type == "window";
-                        var stopAt = nextStopOf(i, isWindow ? "window_stop" : "prop_stop",
-                            isWindow ? null : ev.Asset!.Name);
+                        var stopAt = isWindow ? nextWindowStop[i] : nextPropStop[i];
                         // ★窓は最後の指定だけが出る(プレビューも同じ)。window_stop が無くても、次の @窓 が
                         //   来たらそこで前の窓を終える。終えないと両方が同じレーンで重なる
-                        if (isWindow) stopAt = Math.Min(stopAt, nextStartOfType(i, new[] { "window" }));
+                        if (isWindow) stopAt = Math.Min(stopAt, nextWindow[i]);
                         var item = MakeItem(typeof(ImageItem), ev.Template, log, () => new ImageItem());
                         SetProps(item, log,
                             P("FilePath", path), P("Frame", FrameAt(ev.Start)),
@@ -997,7 +1354,7 @@ namespace KakiniwaYmm4Import
                             // ★未登録の立ち絵名: 状態もアイテムも触らない(ログのみ)。
                             //   触ると activePortraitOf が null になり、既定PSDフォールバックで
                             //   無駄な切断・別の顔での置き直しが起きる(2026-08 監査)。
-                            log(Tr.T("log.switch.unknown", ev.Name, sp));
+                            log(Tr.T("log.switch.unknown", LF(ev.Name), LF(sp)));
                             break;
                         }
                         activePortrait[sp] = plan.PortraitId;
@@ -1024,8 +1381,8 @@ namespace KakiniwaYmm4Import
                                 var hostP = resolveTachieHost(sp, chP, apNew);
                                 if (hostP == null)
                                 {
-                                    log(Tr.T("log.switch.noHost", apNew != null ? apNew.Id : plan.PortraitId, PortraitAssignedName(apNew)));
-                                    log(Tr.T("log.switch", sp, ev.Name));
+                                    log(Tr.T("log.switch.noHost", LF(apNew != null ? apNew.Id : plan.PortraitId), LF(PortraitAssignedName(apNew))));
+                                    log(Tr.T("log.switch", LF(sp), LF(ev.Name)));
                                     break;
                                 }
                                 var tachie = new TachieItem();
@@ -1062,7 +1419,7 @@ namespace KakiniwaYmm4Import
                             //   切替(状態)は済んでいるので、従来どおり次のセリフで復帰できる
                             log(Tr.T("log.switch.replaceFail", ex.Message));
                         }
-                        log(Tr.T("log.switch", sp, ev.Name));
+                        log(Tr.T("log.switch", LF(sp), LF(ev.Name)));
                         break;
                     }
                     case "bgm_stop":
@@ -1071,11 +1428,16 @@ namespace KakiniwaYmm4Import
                     case "custom":
                         break; // アイテム化しない(*_stop は終端計算で消費済み)
                     default:
-                        skipped.Add(Tr.T("log.skipped.unknownType", ev.No, ev.Type));
+                        skipped.Add(Tr.T("log.skipped.unknownType", ev.No, LF(ev.Type, 40)));
                         break;
                 }
             }
 
+            if (loopFirstEta != null)
+                log(Tr.T("log.eta.check", loopFirstEta.Item1, serifTotal, Math.Round(loopFirstEta.Item3, 1),
+                    Math.Round(loopWatch.Elapsed.TotalSeconds - loopFirstEta.Item2, 1)));
+            stages.Lap(Tr.T("stage.loop"));
+            stages.Move(Tr.T("stage.loop"), Tr.T("stage.loopVoice"), loopVoiceMs);
             log(Tr.T("log.items", items.Count, fps));
             foreach (var s in skipped) log(Tr.T("log.skipped", s));
             // 飛ばしたものがあるなら、末尾でもう一度まとめて言う。1行ずつのスキップは
@@ -1102,8 +1464,9 @@ namespace KakiniwaYmm4Import
                     if (layer >= 0) intendedLayer[it] = layer;
                     var rp = FindProp(it.GetType(), "Remark");
                     var remark = rp != null ? rp.GetValue(it) as string : null;
+                    // ★備考(素材名・キャラ名が入る)は「」で括る。保存ログの伏せ字が「」の中を文字数にする(2026-10-22 監査)
                     layerSummary.Add(Tuple.Create(layer,
-                        it.GetType().Name + (string.IsNullOrEmpty(remark) ? "" : " " + remark)));
+                        it.GetType().Name + (string.IsNullOrEmpty(remark) ? "" : " 「" + SingleLine(remark!) + "」")));
                 }
                 catch { }
             }
@@ -1111,6 +1474,7 @@ namespace KakiniwaYmm4Import
             foreach (var t in layerSummary.OrderBy(t2 => t2.Item1))
                 log("  L" + t.Item1.ToString().PadLeft(2) + ": " + t.Item2);
 
+            stages.Lap(Tr.T("stage.misc"));
             // ★小分けに置く。合間で一時停止・停止を見る(停止なら置いた分を残して抜ける)
             var ranges = ChunkRanges(items.Count, PlaceChunkSize);
             for (var ci = 0; ci < ranges.Count; ci++)
@@ -1123,9 +1487,11 @@ namespace KakiniwaYmm4Import
                 }
                 var chunk = items.GetRange(ranges[ci][0], ranges[ci][1] - ranges[ci][0]);
                 AddItems(timeline, chunk, log, ci == 0);
+                report(ImportStage.Place, 0.5 + 0.5 * ranges[ci][1] / Math.Max(1, items.Count), ranges[ci][1], items.Count, null);
                 if (ranges.Count > 1) log(Tr.T("log.placing", ranges[ci][1], items.Count));
             }
 
+            stages.Lap(Tr.T("stage.addItems"));
             // 診断: ボイスアイテムがキャラへ解決できているか(ボイス割り当て問題の切り分け)
             var firstVoice = items.OfType<VoiceItem>().FirstOrDefault();
             if (firstVoice != null)
@@ -1147,8 +1513,19 @@ namespace KakiniwaYmm4Import
             // ボイスは AddVoiceItemAsync が非同期(バックグラウンド)で生成する。実尺が揃う前に
             // 再配置すると「据え置き」になり推定尺のまま=ボイス間に間隔が残る。生成完了(実尺確定)を
             // 待ってから再配置する。
-            await WaitForVoiceLengths(timeline, preExisting, log, control);
+            // ★本命の手順で作ったボイスは、作る時点で生成の完了を待ち、実尺も確定済み。全部がそうなら
+            //   生成待ち(200ms ごとに見て、3回続けて変わらないまで=最低 600ms)を通さない。
+            //   1本でも従来の追加方式(タイムラインに置いてから生成が進む)や未確定のものがあれば今までどおり待つ
+            report(ImportStage.Wait, 0, 0, 0, null);
+            var newVoices = VoiceItemsOf(timeline).Where(v => !preExisting.Contains(v)).ToList();
+            if (CanSkipVoiceWait(newVoices.Count, newVoices.Count(v => officialVoices.Contains(v) && VoiceReadiness(v) > 0)))
+                log(Tr.T("log.wait.skipped", newVoices.Count));
+            else
+                await WaitForVoiceLengths(timeline, preExisting, log, control);
+            stages.Lap(Tr.T("stage.wait"));
             RefreshVoiceLengths(timeline, preExisting, log);
+            stages.Lap(Tr.T("stage.refresh"));
+            report(ImportStage.Relayout, 0, 0, 0, null);
             await control.CheckpointAsync(Tr.T("log.beforeRelayout"));
 
             // セリフの尺は推定(charsPerSecond)なので、実ボイス長とズレて「間延び/被り」が出る。
@@ -1167,6 +1544,7 @@ namespace KakiniwaYmm4Import
                 }
                 catch (Exception ex) { log(Tr.T("log.collision.fail", ex.Message)); }
             }
+            stages.Lap(Tr.T("stage.resequence"));
 
             // 配置後のボイスアイテムへの後処理:
             //   ①テキスト窓がある場合の字幕最前面化
@@ -1180,7 +1558,7 @@ namespace KakiniwaYmm4Import
                 if (timelineItems != null)
                 {
                     var lo = frameOffset;
-                    var hi = frameOffset + F(totalEnd) + 1;
+                    var hi = AddFramesSaturating(AddFramesSaturating(frameOffset, F(totalEnd)), 1);
                     foreach (var it in timelineItems)
                     {
                         var v2 = it as VoiceItem;
@@ -1223,7 +1601,7 @@ namespace KakiniwaYmm4Import
                         if (!(it is TachieFaceItem tfi)) continue;
                         var fp3 = FindProp(tfi.GetType(), "Frame");
                         var fr3 = fp3 != null ? Convert.ToInt32(fp3.GetValue(tfi)) : -1;
-                        if (fr3 < frameOffset || fr3 > frameOffset + F(totalEnd) + 1) continue;
+                        if (fr3 < frameOffset || fr3 > AddFramesSaturating(AddFramesSaturating(frameOffset, F(totalEnd)), 1)) continue;
                         var prm = GetPropValue(tfi, "TachieFaceParameter");
                         log(Tr.T("log.diag.faceItem", fr3)
                             + (prm == null ? "null" : prm.GetType().Name)
@@ -1237,6 +1615,26 @@ namespace KakiniwaYmm4Import
                 if (hasWindow) log(Tr.T("log.jimaku", jimakuCount));
                 if (faceOffCount > 0)
                     log(Tr.T("log.faceOff", faceOffCount));
+            }
+            catch (Exception ex) { log(Tr.T("log.post.fail", ex.Message)); }
+
+            // 診断: 置いたボイスの最終的な位置と長さ(時刻順)。隙間・被りの報告が来たときに、
+            // どの行がどこに並んだかをログだけで追えるように。1行ずつ/並列で並びが同じかの比較にも使う
+            try
+            {
+                var placed = new List<Tuple<int, int, int, string>>();
+                var all = GetPropValue(timeline, "Items") as System.Collections.IEnumerable;
+                if (all != null)
+                    foreach (var it in all)
+                    {
+                        if (!(it is VoiceItem v4) || preExisting.Contains(it)) continue;
+                        var fr = Convert.ToInt32(GetPropValue(v4, "Frame") ?? 0);
+                        var ln = Convert.ToInt32(GetPropValue(v4, "Length") ?? 0);
+                        var ly = Convert.ToInt32(GetPropValue(v4, "Layer") ?? 0);
+                        placed.Add(Tuple.Create(fr, ln, ly, FirstChars(SingleLine(GetPropValue(v4, "Serif") as string ?? ""), 10)));
+                    }
+                foreach (var p4 in placed.OrderBy(x => x.Item1).ThenBy(x => x.Item3))
+                    log(Tr.T("log.placedVoice", p4.Item1, p4.Item2, p4.Item3, p4.Item4));
             }
             catch (Exception ex) { log(Tr.T("log.post.fail", ex.Message)); }
 
@@ -1260,6 +1658,96 @@ namespace KakiniwaYmm4Import
                 }
             }
             catch { /* 案内表示の失敗は取り込み結果に影響させない */ }
+            stages.Lap(Tr.T("stage.post"));
+            report(ImportStage.Done, 1, 0, 0, null);
+            log(Tr.T("log.elapsed", runWatch.ElapsedMilliseconds));
+            foreach (var kv in stages.Sorted())
+                log(Tr.T("log.stage", kv.Key, kv.Value));
+            var voiceTotal = stages.Of(Tr.T("stage.prefetch")) + loopVoiceMs;
+            if (voiceLines > 0) log(Tr.T("log.stage.perVoice", voiceTotal, voiceLines, voiceTotal / voiceLines));
+        }
+
+        /// <summary>料金・回数の制限がかかる声(オンラインのサービス)と、利用者が登録した外部コマンドの声。
+        /// 取り込みの前に件数と文字数を見せて確かめる対象(VoicePrefetch.cs の表と同じ型の名前)。</summary>
+        internal static readonly HashSet<string> CostlyEngines = new HashSet<string>
+        {
+            "YukkuriMovieMaker.Voice.AmazonPollyVoiceSpeaker",
+            "YukkuriMovieMaker.Voice.GoogleTTSVoiceSpeaker",
+            "YukkuriMovieMaker.Voice.MicrosoftAzureTTSVoiceSpeaker",
+            "YukkuriMovieMaker.Voice.CoeFontVoiceSpeaker",
+            "YukkuriMovieMaker.Voice.OpenAI.OpenAIVoiceSpeaker",
+            "YukkuriMovieMaker.Plugin.Community.Voice.GeminiTTS.GeminiTTSVoiceSpeaker",
+            "YukkuriMovieMaker.Plugin.Community.Voice.GrokTTS.GrokTTSVoiceSpeaker",
+            "YukkuriMovieMaker.Plugin.Community.Voice.ElevenLabs.ElevenLabsVoiceSpeaker",
+            "YukkuriMovieMaker.Plugin.Community.Voice.Kotodama.KotodamaVoiceSpeaker",
+            "YukkuriMovieMaker.Plugin.Community.Voice.LivetoonTTS.LivetoonTTSSpeaker",
+            "YukkuriMovieMaker.Plugin.Community.Voice.AivisCloudAPI.AivisCloudAPIVoiceSpeaker",
+            "YukkuriMovieMaker.Voice.CommandLineVoiceSpeaker",
+        };
+
+        /// <summary>料金のかかる声ごとの (エンジン, 行数, 文字数)。無ければ空。
+        /// 声を先にまとめて作るのは PC の中で完結する声だけなので、ここに数える行は1回ずつしか作らない。</summary>
+        internal static List<Tuple<string, int, int>> CostlyVoiceSummary(IEnumerable<Tuple<string, string>> engineAndText)
+            => engineAndText.Where(x => CostlyEngines.Contains(x.Item1))
+                .GroupBy(x => x.Item1)
+                .Select(g => Tuple.Create(g.Key, g.Count(), g.Sum(x => (x.Item2 ?? "").Length)))
+                .ToList();
+
+        /// <summary>セリフや読みが「ファイルの場所」(C:\…・\\server\…・file://…)の形か。
+        /// YMM4 は読みが音声ファイルの場所だと、合成せずにそのファイルを声として読み込む(VoiceItem.IsCustomVoice)。
+        /// パックからそれを渡すと、利用者の PC やネットワーク上の任意の音声を引き込める(2026-10-22 監査)。</summary>
+        internal static bool LooksLikeFileLocation(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            return Uri.TryCreate(s!.Trim(), UriKind.Absolute, out var u) && u.IsFile;
+        }
+
+        /// <summary>ログへ出すパック由来の文字列を1行に収める(LogRedactor.Field の短い別名)</summary>
+        static string LF(string? s, int max = 80) => LogRedactor.Field(s, max);
+
+        /// <summary>ボイスの生成待ちを省いてよいか: 今回置いたボイスが1本以上あり、その全部が
+        /// 本命の手順で作られ(生成の完了まで待ってある)、尺も入っているとき。</summary>
+        internal static bool CanSkipVoiceWait(int newVoices, int officialReady)
+            => newVoices > 0 && officialReady == newVoices;
+
+        /// <summary>先にまとめて作るボイス1行ぶん(パックのイベントの番号で引く)。</summary>
+        internal sealed class VoiceJob
+        {
+            public int Index;
+            public object Model = null!;
+            public string Text = "";
+            public string? Reading;
+            /// <summary>声のエンジン(IVoiceSpeaker の実装の型の完全名。読めなければ空)</summary>
+            public string Engine = "";
+            /// <summary>作る間のログ。並列で作るので溜めておき、配置のループがその行に来たときに出す</summary>
+            public List<string> Log = new List<string>();
+            public bool Ran;
+            public VoiceItem? Result;
+            public Exception? Error;
+        }
+
+        /// <summary>キャラの声のエンジン(Character.Voice.Speaker の型の完全名)。読めなければ空。</summary>
+        static string SpeakerTypeName(object character)
+        {
+            try
+            {
+                var v = GetPropValue(character, "Voice");
+                var sp = v != null ? GetPropValue(v, "Speaker") : null;
+                if (sp == null) return "";
+                // SAPI5 は声ごとに分ける(Microsoft の声だけ並べてよい・VoicePrefetch.cs)
+                return VoiceConcurrency.SapiEngineKey(sp.GetType().FullName ?? "", GetPropValue(sp, "ID") as string);
+            }
+            catch { return ""; } // swallow-ok: 読めなければ「知らないエンジン」=同時数 1 の安全側に倒れる
+        }
+
+        /// <summary>ログ用の短い型名(名前空間を落とす。SAPI の外部の声の印は残す)。</summary>
+        internal static string ShortTypeName(string fullName)
+        {
+            if (string.IsNullOrEmpty(fullName)) return "?";
+            var plain = fullName.Split('#')[0];
+            var suffix = fullName.Length > plain.Length ? fullName.Substring(plain.Length) : "";
+            var k = plain.LastIndexOf('.');
+            return (k >= 0 ? plain.Substring(k + 1) : plain) + suffix;
         }
 
         // ---------- 純アルゴリズム(YMM4 非依存・テスト対象) ----------
@@ -1297,7 +1785,86 @@ namespace KakiniwaYmm4Import
 
         internal static int ShiftDeltaAt(List<Tuple<int, int>> shifts, int f)
         {
-            var d = 0; foreach (var s in shifts) { if (s.Item1 <= f) d = s.Item2; else break; } return d;
+            // ★二分探索。アイテムごとに全ボイスをなめると、件数の二乗で固まる(2026-10-20c)。
+            //   同じ旧Frameが並ぶときは、従来どおり最後のものを採る。
+            int lo = 0, hi = shifts.Count; // shifts[lo..hi) のうち Item1 > f の最初の位置を探す
+            while (lo < hi)
+            {
+                var mid = lo + (hi - lo) / 2;
+                if (shifts[mid].Item1 <= f) lo = mid + 1; else hi = mid;
+            }
+            return lo == 0 ? 0 : shifts[lo - 1].Item2;
+        }
+
+        /// <summary>フレームの上限。位置と長さを足し合わせても int があふれない余裕を残す。</summary>
+        internal const int MaxFrame = int.MaxValue / 4;
+
+        /// <summary>秒→フレーム(四捨五入)。int の範囲で飽和させる(素の (int) 変換はあふれると負になる)。
+        /// NaN は 0。</summary>
+        internal static int SecondsToFrames(double sec, double fps)
+        {
+            var v = Math.Round(sec * fps);
+            if (double.IsNaN(v)) return 0;
+            if (v >= int.MaxValue) return int.MaxValue;
+            if (v <= int.MinValue) return int.MinValue;
+            return (int)v;
+        }
+
+        /// <summary>フレームの足し算(int の範囲で飽和)。</summary>
+        internal static int AddFramesSaturating(int a, int b)
+            => (int)Math.Max(int.MinValue, Math.Min(int.MaxValue, (long)a + b));
+
+        /// <summary>このイベントの開始・終わりがフレームの上限に収まるか(収まらなければ置かない)。</summary>
+        internal static bool EventFitsFrames(double startSec, double seconds, double fps, int frameOffset)
+        {
+            var end = Math.Round(startSec * fps) + Math.Round(Math.Max(0, seconds) * fps) + (double)frameOffset;
+            return double.IsFinite(end) && startSec >= 0 && end <= MaxFrame;
+        }
+
+        /// <summary>各イベント i について「i より後で、types のどれかの種類の最初のイベントの開始」。
+        /// 無ければ fallback。1回の逆走査で全部求める。</summary>
+        internal static double[] NextStartOfTypes(List<PackEvent> evs, string[] types, double fallback)
+        {
+            var r = new double[evs.Count];
+            var next = fallback;
+            for (var i = evs.Count - 1; i >= 0; i--)
+            {
+                r[i] = next;
+                if (Array.IndexOf(types, evs[i].Type) >= 0) next = evs[i].Start;
+            }
+            return r;
+        }
+
+        /// <summary>各イベント i について「i より後で、i の素材名(asset.name)を止める stopType の
+        /// 最初のイベントの開始」(停止側は name か asset.name が一致すればよい)。無ければ fallback。</summary>
+        internal static double[] NextNamedStopStarts(List<PackEvent> evs, string stopType, double fallback)
+        {
+            var r = new double[evs.Count];
+            var latest = new Dictionary<string, double>();
+            for (var i = evs.Count - 1; i >= 0; i--)
+            {
+                var key = evs[i].Asset != null ? evs[i].Asset!.Name : null;
+                double s;
+                r[i] = key != null && latest.TryGetValue(key, out s) ? s : fallback;
+                if (evs[i].Type == stopType)
+                {
+                    if (evs[i].Name != null) latest[evs[i].Name!] = evs[i].Start;
+                    if (evs[i].Asset != null && evs[i].Asset!.Name != null) latest[evs[i].Asset!.Name] = evs[i].Start;
+                }
+            }
+            return r;
+        }
+
+        /// <summary>昇順の配列で value より大きい最初の位置(無ければ Length)。</summary>
+        internal static int UpperBound(int[] sorted, int value)
+        {
+            int lo = 0, hi = sorted.Length;
+            while (lo < hi)
+            {
+                var mid = lo + (hi - lo) / 2;
+                if (sorted[mid] <= value) lo = mid + 1; else hi = mid;
+            }
+            return lo;
         }
 
         /// <summary>立ち絵名の解決(id 優先・Ymm4Name は古い書き庭パックの保険)。無ければ null。</summary>
@@ -1363,12 +1930,12 @@ namespace KakiniwaYmm4Import
         {
             var pr = FindPortrait(portraits, name);
             if (pr == null) return null;
-            Func<double, int> F = sec => (int)Math.Round(sec * fps);
+            Func<double, int> F = sec => SecondsToFrames(sec, fps);
             var plan = new PortraitSwitchPlan
             {
                 PortraitId = pr.Id,
                 Replace = placedStartSec != null,
-                NewStartFrame = F(evStartSec) + frameOffset,
+                NewStartFrame = AddFramesSaturating(F(evStartSec), frameOffset),
                 NewLength = Math.Max(1, F(totalEndSec - evStartSec)),
             };
             if (placedStartSec != null)
@@ -1571,7 +2138,7 @@ namespace KakiniwaYmm4Import
                     return false;
                 }
 
-                var gap = Math.Max(0, (int)Math.Round(gapSec * fps));
+                var gap = Math.Max(0, SecondsToFrames(gapSec, fps));
                 // (旧Frame, ズレ量) の階段関数。ボイス以外のアイテムを直前ボイスのズレ量で移動するのに使う。
                 var shifts = new List<Tuple<int, int>>();
                 var cursor = voices[0].frame; // 先頭ボイスは動かさない
@@ -1587,8 +2154,9 @@ namespace KakiniwaYmm4Import
                     //   (2026-08-08 監査)。
                     var pauseFrames = 0;
                     if (voicePause != null && voicePause.TryGetValue(v.item, out var ps) && ps > 0)
-                        pauseFrames = (int)Math.Round(ps * fps);
-                    cursor += Math.Max(1, v.len) + pauseFrames + gap;
+                        pauseFrames = SecondsToFrames(ps, fps);
+                    // ★足し続けても int があふれないよう上限で止める(間は1行24時間まで・行は2万まで)
+                    cursor = (int)Math.Min(MaxFrame, (long)cursor + Math.Max(1, v.len) + pauseFrames + gap);
                 }
 
                 // 旧Frame f のズレ量。位置と長さの写像に使う(本体は ShiftDeltaAt に抽出済み)。
@@ -1649,15 +2217,18 @@ namespace KakiniwaYmm4Import
                 var portraitSynced = 0;
                 if (portraitEndSync != null && portraitEndSync.Count > 0)
                 {
+                    // ★索引を引いてから探す(切替ごとに全アイテム・全ボイスをなめると二乗になる)
+                    var allSet = new HashSet<object>(all);
+                    var voicesByOldFrame = voices.ToLookup(v => v.frame);
                     foreach (var kv in portraitEndSync)
                     {
                         var it = kv.Key;
-                        if (!all.Contains(it)) continue;
+                        if (!allSet.Contains(it)) continue;
                         var lp2 = FindProp(it.GetType(), "Length");
                         if (lp2 == null || !lp2.CanWrite) continue;
                         var nm2 = GetPropValue(it, "CharacterName") as string ?? "";
-                        var vMatch = voices.FirstOrDefault(v => v.frame == kv.Value
-                            && (GetPropValue(v.item, "CharacterName") as string ?? "") == nm2);
+                        var vMatch = voicesByOldFrame[kv.Value].FirstOrDefault(
+                            v => (GetPropValue(v.item, "CharacterName") as string ?? "") == nm2);
                         var newLen = PortraitCutTachieNewLength(FrameOf(it), LenOf(it),
                             vMatch != null ? (int?)FrameOf(vMatch.item) : null,
                             vMatch != null ? LenOf(vMatch.item) : 0);
@@ -1738,14 +2309,16 @@ namespace KakiniwaYmm4Import
                 {
                     var props = propItems.Where(p => FindProp(p.GetType(), "Frame") != null)
                         .OrderBy(FrameOf).ToList();
+                    // ★開始フレームの昇順の配列を二分探索で引く(小物ごとに全小物をなめると二乗になる)
+                    var propFrames = props.Select(FrameOf).ToArray();
                     foreach (var p in props)
                     {
                         if (!propExplicitEnd.Contains(p)) continue;
                         var lp = FindProp(p.GetType(), "Length");
                         if (lp == null || !lp.CanWrite) continue;
                         var pf = FrameOf(p);
-                        var nextStart = int.MaxValue;
-                        foreach (var q in props) { var qf = FrameOf(q); if (qf > pf && qf < nextStart) nextStart = qf; }
+                        var ub = UpperBound(propFrames, pf);
+                        var nextStart = ub < propFrames.Length ? propFrames[ub] : int.MaxValue;
                         if (nextStart != int.MaxValue && pf + LenOf(p) > nextStart)
                         {
                             SetProps(p, log, P("Length", Math.Max(1, nextStart - pf)));

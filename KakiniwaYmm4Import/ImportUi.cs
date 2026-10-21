@@ -32,6 +32,12 @@ namespace KakiniwaYmm4Import
     public static class SelectListDialog
     {
         public static HashSet<string>? Show(string title, IEnumerable<string> names)
+            => Show(title, names, null, null);
+
+        /// <param name="message">一覧の上に出す説明(null=無し)</param>
+        /// <param name="initiallyChecked">最初に印を付けておくか(null=全部付ける)</param>
+        public static HashSet<string>? Show(string title, IEnumerable<string> names,
+            string? message, Func<string, bool>? initiallyChecked)
         {
             var win = new Window
             {
@@ -58,11 +64,22 @@ namespace KakiniwaYmm4Import
             DockPanel.SetDock(buttons, Dock.Bottom);
             root.Children.Add(buttons);
 
+            if (!string.IsNullOrEmpty(message))
+            {
+                var msg = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+                DockPanel.SetDock(msg, Dock.Top);
+                root.Children.Add(msg);
+            }
             var list = new StackPanel();
             var checks = new List<CheckBox>();
             foreach (var n in names)
             {
-                var cb = new CheckBox { Content = n, IsChecked = true, Margin = new Thickness(0, 3, 0, 3) };
+                var cb = new CheckBox
+                {
+                    Content = n,
+                    IsChecked = initiallyChecked == null || initiallyChecked(n),
+                    Margin = new Thickness(0, 3, 0, 3),
+                };
                 checks.Add(cb);
                 list.Children.Add(cb);
             }
@@ -92,6 +109,9 @@ namespace KakiniwaYmm4Import
         Button placeButton = null!;
         Button pauseButton = null!;
         Button stopButton = null!;
+        // 進捗バーと残り時間の目安(配置中だけ動く)
+        ProgressBar progressBar = null!;
+        TextBlock progressText = null!;
         ImportControl? running;
         TextBox baseLayerBox = null!;
         ComboBox startAtCombo = null!;
@@ -107,6 +127,13 @@ namespace KakiniwaYmm4Import
         readonly Dictionary<string, TextBox> kindLayerBoxes = new Dictionary<string, TextBox>();
         Button registerPresetsButton = null!;
         readonly List<Tuple<string, ComboBox>> combos = new List<Tuple<string, ComboBox>>();
+        // 選択を「パックの名前(ymm4Name/name)との一致」で自動で付けただけで、利用者が選んでいない行。
+        // ★パックの外の PSD へプリセットを書くかの確認で、これらは最初は印を付けない(2026-10-20c)
+        readonly HashSet<string> autoPicked = new HashSet<string>();
+        // 前回の記憶(settings.SpeakerMap)で付いただけの選択。記憶はパックのキャラ id で引くので、別のパックが
+        // 同じ id を名乗ると、そのパックでも利用者の PC の PSD が選ばれた状態で開く。プリセットの書き先の確認では
+        // 「この窓で利用者が選んだもの」とは見なさない(2026-10-22 監査)。記憶そのものは便利なので残す
+        readonly HashSet<string> rememberedPicked = new HashSet<string>();
         readonly ImportSettings settings = SettingsStore.Load(null);
         Pack? pack;
         string packDir = "";
@@ -318,7 +345,22 @@ namespace KakiniwaYmm4Import
             placeRow.Children.Add(placeButton);
             placeRow.Children.Add(pauseButton);
             placeRow.Children.Add(stopButton);
+            // ★同じ行に置く(行を増やさない)。進み具合は ImportProgress.cs が段階の重みで全体に直す
+            progressBar = new ProgressBar
+            {
+                Minimum = 0, Maximum = 1, Value = 0, Width = 160, Height = 14,
+                Margin = new Thickness(12, 4, 0, 8), VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+            };
+            // ★文言は次の行へ(ボタンと同じ行だと、窓の幅によって「残り約…」が切れて見えなかった・実機で確認)
+            progressText = new TextBlock
+            {
+                Margin = new Thickness(0, 0, 0, 6),
+                TextWrapping = TextWrapping.Wrap,
+            };
+            placeRow.Children.Add(progressBar);
             top.Children.Add(placeRow);
+            top.Children.Add(progressText);
 
             DockPanel.SetDock(top, Dock.Top);
             root.Children.Add(top);
@@ -384,6 +426,8 @@ namespace KakiniwaYmm4Import
             // まだ記憶していない話者の選択も、作り直しのあとに残るよう設定へ写す
             foreach (var pair in combos)
             {
+                // 自動で付けただけの選択は記憶しない(作り直しでも同じ名前の一致で付く)
+                if (autoPicked.Contains(pair.Item1)) continue;
                 var choice = pair.Item2.SelectedItem as CharacterChoice;
                 if (choice != null && choice.Model != null) settings.SpeakerMap[pair.Item1] = choice.Name;
             }
@@ -444,7 +488,9 @@ namespace KakiniwaYmm4Import
             try
             {
                 packDir = dialog.FolderName;
+                var loadWatch = System.Diagnostics.Stopwatch.StartNew();
                 pack = Importer.LoadPack(packDir, Log);
+                Log(Tr.T("log.stage.load", loadWatch.ElapsedMilliseconds));
                 if (pack == null) return;
                 BuildMappingRows();
                 ApplyPackLayers(pack.Layers);
@@ -459,6 +505,8 @@ namespace KakiniwaYmm4Import
         {
             mappingPanel.Children.Clear();
             combos.Clear();
+            autoPicked.Clear();
+            rememberedPicked.Clear();
             voiceLayerBoxes.Clear();
             BuildAssetRows();
             if (pack == null) return;
@@ -496,7 +544,7 @@ namespace KakiniwaYmm4Import
                     for (var i = 1; i < combo.Items.Count; i++)
                     {
                         var cc = (CharacterChoice)combo.Items[i]!;
-                        if (cc.Name == saved) { combo.SelectedIndex = i; found = true; break; }
+                        if (cc.Name == saved) { combo.SelectedIndex = i; found = true; rememberedPicked.Add(c.Id); break; }
                     }
                 }
                 if (!found)
@@ -504,9 +552,11 @@ namespace KakiniwaYmm4Import
                     for (var i = 1; i < combo.Items.Count; i++)
                     {
                         var cc = (CharacterChoice)combo.Items[i]!;
-                        if (cc.Name == fallbackName) { combo.SelectedIndex = i; break; }
+                        if (cc.Name == fallbackName) { combo.SelectedIndex = i; autoPicked.Add(c.Id); break; }
                     }
                 }
+                var mainKey = c.Id;
+                combo.SelectionChanged += (_, __) => { autoPicked.Remove(mainKey); rememberedPicked.Remove(mainKey); };
                 row.Children.Add(combo);
                 var vbox = new TextBox { Width = 36, Margin = new Thickness(6, 0, 0, 0), ToolTip = Tr.T("ui.voiceBoxTip") };
                 int vsaved;
@@ -570,9 +620,16 @@ namespace KakiniwaYmm4Import
                             for (var i = 1; i < pcombo.Items.Count; i++)
                             {
                                 var cc = (CharacterChoice)pcombo.Items[i]!;
-                                if (cc.Name == pdefault) { pcombo.SelectedIndex = i; break; }
+                                if (cc.Name == pdefault)
+                                {
+                                    pcombo.SelectedIndex = i;
+                                    if (psaved == null) autoPicked.Add(key); // パックの ymm4Name で付けただけ
+                                    else rememberedPicked.Add(key);           // 前回の記憶で付いただけ
+                                    break;
+                                }
                             }
                         }
+                        pcombo.SelectionChanged += (_, __) => { autoPicked.Remove(key); rememberedPicked.Remove(key); };
                         prow.Children.Add(pcombo);
                         mappingPanel.Children.Add(prow);
                         combos.Add(Tuple.Create(key, pcombo));
@@ -679,12 +736,64 @@ namespace KakiniwaYmm4Import
                 }
                 var selected = SelectListDialog.Show(Tr.T("ui.pickPresetChars"), eligible);
                 if (selected == null || selected.Count == 0) return;
-                await Importer.RegisterExpressionPresets(pack, packDir, map, selected, Log);
+                var owned = new HashSet<string>(settings.OwnedPresets ?? new List<string>());
+                var picked = Importer.NotChosenInWindow(autoPicked, rememberedPicked);
+                await Importer.RegisterExpressionPresets(pack, packDir, map, selected, Log,
+                    targets => ConfirmPresetTargets(targets, picked), owned);
+                settings.OwnedPresets = owned.OrderBy(x => x, StringComparer.Ordinal).ToList();
+                SettingsStore.Save(settings, Log);
             }
             catch (Exception ex)
             {
                 Log(Tr.T("log.exception", ex));
             }
+        }
+
+        /// <summary>書き先の PSD を一覧で見せ、書いてよいものだけを返す(取りやめは null)。
+        /// パックの外の PSD は、利用者が窓の行で選んだものだけ最初から印を付ける。</summary>
+        static ICollection<Importer.PresetTarget>? ConfirmPresetTargets(
+            IReadOnlyList<Importer.PresetTarget> targets, ISet<string> autoPicked)
+        {
+            var byLine = new Dictionary<string, Importer.PresetTarget>();
+            var lines = new List<string>();
+            for (var i = 0; i < targets.Count; i++)
+            {
+                var t = targets[i];
+                var line = (i + 1) + ". " + Path.GetFileName(t.PsdPath) + " — " + t.Label
+                    + (t.InPack ? "" : "(" + Tr.T("ui.presetOutsidePack") + ")");
+                byLine[line] = t;
+                lines.Add(line);
+            }
+            var chosen = SelectListDialog.Show(Tr.T("ui.confirmPresetTitle"), lines,
+                Tr.T("ui.confirmPresetMessage"),
+                line => Importer.PresetTargetCheckedByDefault(byLine[line], autoPicked));
+            if (chosen == null) return null;
+            return chosen.Select(l => byLine[l]).ToList();
+        }
+
+        /// <summary>進捗の知らせを表示へ(UI スレッド)。残り時間は分かるときだけ出す。</summary>
+        void ShowProgress(ImportProgressReport r)
+        {
+            // 並列に作ったボイスの知らせは、終わった順と届く順が前後しうる。戻る向きの知らせは捨てる
+            if (r.Fraction < progressBar.Value && r.Stage != ImportStage.Prepare) return;
+            progressBar.Value = r.Fraction;
+            if (r.Stage == ImportStage.Done)
+            {
+                progressText.Text = Tr.T("progress.done", ImportProgressMath.FormatElapsed(r.ElapsedSeconds ?? 0));
+                return;
+            }
+            var text = Tr.T("progress.stage." + r.Stage);
+            if (r.Total > 0) text += " " + r.Done + "/" + r.Total;
+            if (r.Stage == ImportStage.Voices && r.Done < r.Total)
+            {
+                if (r.RemainingSeconds == null) text += Tr.T("progress.estimating");
+                else
+                {
+                    var (kind, m, s) = ImportProgressMath.RoundRemaining(r.RemainingSeconds.Value);
+                    text += Tr.T("progress.remaining." + kind, m, s);
+                }
+            }
+            progressText.Text = text;
         }
 
         void OnPauseClick(object sender, RoutedEventArgs e)
@@ -739,12 +848,23 @@ namespace KakiniwaYmm4Import
                     if (choice != null) map[pair.Item1] = choice;
                 }
                 ReadUiIntoSettings();
-                await Importer.Run(pack, packDir, map, settings, Log, control);
+                progressBar.Value = 0;
+                progressBar.Visibility = Visibility.Visible;
+                progressText.Text = Tr.T("progress.stage.Prepare");
+                // Progress<T> は作ったスレッド(UI)で受け取る。ボイスを並列で作る別スレッドからの知らせもここへ戻る
+                var progress = new Progress<ImportProgressReport>(ShowProgress);
+                // 料金・回数の制限がかかる声で作る前の確認(はい/いいえ)
+                Func<string, bool> confirm = msg => System.Windows.MessageBox.Show(msg, Tr.T("msg.title"),
+                    System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question) == System.Windows.MessageBoxResult.Yes;
+                await Importer.Run(pack, packDir, map, settings, Log, control, progress, confirm);
 
                 // 今回の割り当てを記憶(次回は最初から選択済みにする)。
                 // 「名前そのまま」(未割り当て)は記憶しない=次回また選び直せる
                 foreach (var pair in map)
                 {
+                    // 自動で付けただけの選択は記憶しない(次回も同じ名前の一致で付く)。
+                    // ★記憶すると「利用者が選んだ」と区別できなくなる(プリセットの書き先の確認で使う)
+                    if (autoPicked.Contains(pair.Key)) continue;
                     if (pair.Value.Model != null) settings.SpeakerMap[pair.Key] = pair.Value.Name;
                     else settings.SpeakerMap.Remove(pair.Key);
                 }
@@ -755,6 +875,7 @@ namespace KakiniwaYmm4Import
                 // 利用者が自分で止めた。失敗ではないので警告にはしないが、
                 // 「途中まで置いたものが残る」ことは同じなので、そこは同じ言葉で伝える
                 Log(ex.Message);
+                progressText.Text = Tr.T("progress.stopped");
                 try
                 {
                     System.Windows.MessageBox.Show(

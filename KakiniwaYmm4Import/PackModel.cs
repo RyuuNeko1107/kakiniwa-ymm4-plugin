@@ -27,7 +27,39 @@ namespace KakiniwaYmm4Import
         /// <summary>このプラグイン自身の版。書き庭側は timeline.json の pluginMin に
         /// 「このパックを正しく読むのに必要な最低版」を書く。突き合わせて古ければ警告する
         /// (本体は自動更新・プラグインは別配布なので、ずれた組み合わせは必ず起きる)。</summary>
-        public const string PluginVersion = "0.5.0";
+        public const string PluginVersion = "0.6.0";
+    }
+
+    /// <summary>受け取ったパックの大きさ・値の上限(2026-10-20c 監査)。
+    /// パックは第三者から受け取ることもある。上限が無いと、巨大な timeline.json を丸ごと
+    /// メモリへ読み、件数の二乗で回る処理(素材の終わりを探す・話者の登場順など)で
+    /// YMM4 ごと固まる。時刻が大きすぎるとフレーム数(int)があふれて負の位置・長さになる。</summary>
+    public static class PackLimits
+    {
+        /// <summary>timeline.json の大きさ(バイト)。書き庭の実物は数百KB〜数MB</summary>
+        public const long MaxJsonBytes = 32L * 1024 * 1024;
+        public const int MaxEvents = 20000;
+        public const int MaxCharacters = 200;
+        /// <summary>セリフの話者(speaker)の種類。キャラ一覧に無い id も数える</summary>
+        public const int MaxSpeakers = 200;
+        /// <summary>1行の立ち位置・SE、1キャラの立ち絵・表情の数</summary>
+        public const int MaxListPerItem = 1000;
+        /// <summary>開始・長さ・間の上限(秒)=24時間</summary>
+        public const double MaxSeconds = 24 * 60 * 60;
+        /// <summary>位置・高さ(画面比 %)の上限。±1000% を超える指定は画面の外で意味が無い</summary>
+        public const double MaxPercent = 1000;
+        /// <summary>音声の実尺として信じる上限(秒)=6時間。壊れたヘッダの巨大値を尺に使わない</summary>
+        public const double MaxAudioSeconds = 6 * 60 * 60;
+        /// <summary>画像の縦横(px)の上限。0 や巨大値で拡大率が Infinity/0 にならないように</summary>
+        public const double MaxImagePixels = 100000;
+        /// <summary>1つの表情の PSD レイヤーの数(layers・layerIds)。表情を置くたびにこの長さのリストを何本も作るので、
+        /// 上限が無いと細工したパックで YMM4 をメモリ不足で落とせた(2026-10-22 監査)。実物の PSD は数百まで</summary>
+        public const int MaxLayersPerExpression = 4096;
+        /// <summary>表情の id・名前(label)・レイヤー名の長さ</summary>
+        public const int MaxNameLength = 256;
+        /// <summary>1行のセリフ(本文・読み)の文字数。書き庭の1行はふつう数十〜数百字。
+        /// 長大な1行を料金のかかる声へ送らせない・合成で固まらせない(2026-10-22 監査)</summary>
+        public const int MaxSerifChars = 2000;
     }
 
     public class PackGenerator
@@ -114,6 +146,10 @@ namespace KakiniwaYmm4Import
 
     public class PackEvent
     {
+        /// <summary>読み込み時に決める印(パックには書かない): このセリフは声を作らない。
+        /// セリフがファイルの場所の形のとき(YMM4 がその場所の音声を読み込んでしまうため)。</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool NoVoice { get; set; }
         public int No { get; set; }
         public string Scene { get; set; } = "";
         public string Type { get; set; } = "";
@@ -181,6 +217,13 @@ namespace KakiniwaYmm4Import
                 log(Tr.T("log.pack.noJson", jsonPath));
                 return null;
             }
+            // ★読む前に大きさを見る。丸ごとメモリへ読んでから断っても遅い(2026-10-20c)
+            var jsonBytes = new FileInfo(jsonPath).Length;
+            if (jsonBytes > PackLimits.MaxJsonBytes)
+            {
+                log(Tr.T("log.pack.tooBig", jsonBytes, PackLimits.MaxJsonBytes));
+                return null;
+            }
             var pack = JsonSerializer.Deserialize<Pack>(
                 File.ReadAllText(jsonPath),
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
@@ -205,13 +248,37 @@ namespace KakiniwaYmm4Import
             if (pack.Characters == null) pack.Characters = new List<PackCharacter>();
             pack.Characters.RemoveAll(c2 => c2 == null);
             if (pack.Timing == null) pack.Timing = new PackTiming();
+            // ★件数の上限。超えたら読み込まない(途中まで置くより手前で止める・2026-10-20c)
+            var over = PackLimitExceeded(pack);
+            if (over != null)
+            {
+                log(Tr.T("log.pack.tooMany", Tr.T("log.pack.limit." + over.Item1), over.Item2, over.Item3));
+                return null;
+            }
             foreach (var ev2 in pack.Events)
             {
                 if (ev2.Type == null) ev2.Type = "";
                 if (ev2.Se == null) ev2.Se = new List<PackAssetRef>();
-                // 負や逆順の時間はゼロ長へ丸める(負の Length を YMM4 に渡さない)
-                if (double.IsNaN(ev2.Start) || double.IsInfinity(ev2.Start) || ev2.Start < 0) ev2.Start = 0;
-                if (double.IsNaN(ev2.Seconds) || double.IsInfinity(ev2.Seconds) || ev2.Seconds < 0) ev2.Seconds = 0;
+                // 負や逆順の時間はゼロ長へ丸める(負の Length を YMM4 に渡さない)。
+                // ★大きすぎる時間は 24 時間で止める(フレーム数の int があふれて負になる・2026-10-20c)
+                ev2.Start = ClampPackSeconds(ev2.Start);
+                ev2.Seconds = ClampPackSeconds(ev2.Seconds);
+                ev2.Pause = ClampPackSeconds(ev2.Pause);
+                // 位置・高さ(画面比 %)は ±1000% へ丸める(巨大値で拡大率・位置が Infinity になる)
+                ev2.X = ClampPackPercent(ev2.X, -PackLimits.MaxPercent);
+                ev2.Y = ClampPackPercent(ev2.Y, -PackLimits.MaxPercent);
+                ev2.Height = ClampPackPercent(ev2.Height, 0);
+                if (ev2.Positions != null)
+                {
+                    ev2.Positions.RemoveAll(p2 => p2 == null);
+                    foreach (var p2 in ev2.Positions)
+                    {
+                        if (p2.Speaker == null) p2.Speaker = "";
+                        p2.X = ClampPackPercent(p2.X, -PackLimits.MaxPercent) ?? 0;
+                        p2.Y = ClampPackPercent(p2.Y, -PackLimits.MaxPercent);
+                        p2.Height = ClampPackPercent(p2.Height, 0);
+                    }
+                }
                 // ★セリフ本文の改行(書き庭の [改行])を、この環境の行区切り(CRLF)へそろえる。
                 //   パックは LF で書かれる(JSON の "\n")。YMM4/WPF は CRLF が行の区切りなので、
                 //   LF のまま渡すと字幕が1行のままだったり、見えない文字として残ったりする。
@@ -229,23 +296,39 @@ namespace KakiniwaYmm4Import
                 if (ev2.Text != null) ev2.Text = NormalizeLineBreaks(ev2.Text);
                 // 読み(声)に改行は入らない約束。混ざっていたら落とす(読み上げに渡すため)
                 if (ev2.Reading != null) ev2.Reading = RemoveLineBreaks(ev2.Reading);
+                // ★読みやセリフが「ファイルの場所」の形だと、YMM4 は合成せずにその場所の音声を声として読み込む
+                //   (VoiceItem.IsCustomVoice。\\server\… ならネットワークへ取りに行く)。パックからは使わせない(2026-10-22 監査)。
+                //   読みは捨てて本文から作り、本文がそうなら声を作らない
+                if (ev2.Type == "serif" && LooksLikeFileLocation(ev2.Reading))
+                {
+                    log(Tr.T("log.pack.readingIsPath", ev2.No));
+                    ev2.Reading = null;
+                }
+                if (ev2.Type == "serif" && LooksLikeFileLocation(ev2.Text))
+                {
+                    log(Tr.T("log.pack.textIsPath", ev2.No));
+                    ev2.NoVoice = true;
+                }
             }
             if (pack.Version < 1)
             {
                 // 版が入っていない=古い書き庭で作られたか、別物の可能性。読めるだけ読む
                 log(Tr.T("log.pack.noVersion"));
             }
-            log(Tr.T("log.pack.loaded", pack.Title, pack.Episode, pack.Events.Count, pack.Characters.Count));
+            // ★パック由来の文字列は LogRedactor.Field で1行に収めてから出す(改行でログの行を偽装させない)
+            log(Tr.T("log.pack.loaded", LogRedactor.Field(pack.Title), LogRedactor.Field(pack.Episode), pack.Events.Count, pack.Characters.Count));
             // 版の突き合わせ(整合の確認が一目でできるように・実機要望 2026-08-07)
             log(Tr.T("log.pack.versions",
-                string.IsNullOrEmpty(pack.Generator?.Version) ? "?" : pack.Generator!.Version,
+                string.IsNullOrEmpty(pack.Generator?.Version) ? "?" : LogRedactor.Field(pack.Generator!.Version, 32),
                 pack.Version, PackSchema.PluginVersion, PackSchema.Supported));
-            if (!string.IsNullOrEmpty(pack.PluginMin) &&
+            // ★版は「数字と点だけ」の形のときだけ使う。以前は先頭の数字だけ比べて、改行や URL を含む文字列ごと
+            //   「新しいプラグインが配布されています」の案内へ差し込んでいた(2026-10-22 監査)。形が違えば無視する
+            if (IsPlainVersion(pack.PluginMin) &&
                 CompareVersions(PackSchema.PluginVersion, pack.PluginMin!) < 0)
             {
                 log(Tr.T("log.pack.needPlugin", pack.PluginMin, PackSchema.PluginVersion));
             }
-            else if (!string.IsNullOrEmpty(pack.PluginLatest) &&
+            else if (IsPlainVersion(pack.PluginLatest) &&
                 CompareVersions(PackSchema.PluginVersion, pack.PluginLatest!) < 0)
             {
                 // 動作には支障がない(pluginMin は満たしている)ので、案内だけ一度出す
@@ -253,6 +336,12 @@ namespace KakiniwaYmm4Import
             }
             return pack;
         }
+
+        static readonly System.Text.RegularExpressions.Regex PlainVersion =
+            new System.Text.RegularExpressions.Regex(@"^\d{1,4}(\.\d{1,4}){0,3}$");
+
+        /// <summary>パックに書かれた版(pluginMin・pluginLatest)が「0.5.0」のような数字と点だけの形か。</summary>
+        internal static bool IsPlainVersion(string? v) => v != null && PlainVersion.IsMatch(v);
 
         /// <summary>"0.2.1" 形式の版数を数値で比較(a&lt;b なら負)。桁数違い・数字以外は 0 扱いで安全側</summary>
         static int CompareVersions(string a, string b)
@@ -267,6 +356,72 @@ namespace KakiniwaYmm4Import
                 if (na != nb) return na - nb;
             }
             return 0;
+        }
+
+        /// <summary>パックの件数の上限を超えているものを返す(無ければ null)。
+        /// Item1=辞書の名前(log.pack.limit.*)、Item2=件数、Item3=上限。</summary>
+        internal static Tuple<string, int, int>? PackLimitExceeded(Pack pack)
+        {
+            if (pack.Events.Count > PackLimits.MaxEvents)
+                return Tuple.Create("events", pack.Events.Count, PackLimits.MaxEvents);
+            if (pack.Characters.Count > PackLimits.MaxCharacters)
+                return Tuple.Create("characters", pack.Characters.Count, PackLimits.MaxCharacters);
+            var speakers = new HashSet<string>();
+            foreach (var e in pack.Events)
+            {
+                if (e.Speaker != null) speakers.Add(e.Speaker);
+                var chars = Math.Max((e.Text ?? "").Length, (e.Reading ?? "").Length);
+                if (chars > PackLimits.MaxSerifChars) return Tuple.Create("serif", chars, PackLimits.MaxSerifChars);
+                var n = Math.Max(e.Positions != null ? e.Positions.Count : 0, e.Se != null ? e.Se.Count : 0);
+                if (n > PackLimits.MaxListPerItem) return Tuple.Create("list", n, PackLimits.MaxListPerItem);
+            }
+            if (speakers.Count > PackLimits.MaxSpeakers)
+                return Tuple.Create("speakers", speakers.Count, PackLimits.MaxSpeakers);
+            foreach (var c in pack.Characters)
+            {
+                var n = Math.Max(c.Portraits != null ? c.Portraits.Count : 0,
+                    c.Expressions != null ? c.Expressions.Count : 0);
+                if (c.Portraits != null)
+                    foreach (var p in c.Portraits)
+                        if (p != null && p.Expressions != null) n = Math.Max(n, p.Expressions.Count);
+                if (n > PackLimits.MaxListPerItem) return Tuple.Create("list", n, PackLimits.MaxListPerItem);
+                // 表情の PSD レイヤーの数と、名前の長さ(プリセット登録の経路も同じパックを読むので、ここで止まる)
+                var exprs = new List<PackExpression>();
+                if (c.Expressions != null) exprs.AddRange(c.Expressions);
+                if (c.Portraits != null)
+                    foreach (var p in c.Portraits)
+                        if (p != null && p.Expressions != null) exprs.AddRange(p.Expressions);
+                foreach (var x in exprs)
+                {
+                    if (x == null) continue;
+                    var longest = Math.Max((x.Id ?? "").Length, (x.Label ?? "").Length);
+                    if (x.Psd != null)
+                    {
+                        var layers = Math.Max(x.Psd.Layers != null ? x.Psd.Layers.Count : 0,
+                            x.Psd.LayerIds != null ? x.Psd.LayerIds.Count : 0);
+                        if (layers > PackLimits.MaxLayersPerExpression)
+                            return Tuple.Create("layers", layers, PackLimits.MaxLayersPerExpression);
+                        if (x.Psd.Layers != null)
+                            foreach (var l in x.Psd.Layers) longest = Math.Max(longest, (l ?? "").Length);
+                    }
+                    if (longest > PackLimits.MaxNameLength) return Tuple.Create("name", longest, PackLimits.MaxNameLength);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>パックの時間(秒)を 0〜24時間へ丸める。NaN・無限・負は 0。</summary>
+        internal static double ClampPackSeconds(double v)
+        {
+            if (double.IsNaN(v) || v < 0) return 0;
+            return v > PackLimits.MaxSeconds ? PackLimits.MaxSeconds : v;
+        }
+
+        /// <summary>位置・高さ(画面比 %)を [min, 1000] へ丸める。null と NaN は null(=既定)。</summary>
+        internal static double? ClampPackPercent(double? v, double min)
+        {
+            if (v == null || double.IsNaN(v.Value)) return null;
+            return Math.Max(min, Math.Min(PackLimits.MaxPercent, v.Value));
         }
 
         // ---------- 改行(セリフの中の [改行]) ----------
@@ -315,8 +470,13 @@ namespace KakiniwaYmm4Import
         /// aac/opus の音楽が「素材が見つからない」でスキップされ、しかも既定は
         /// 「同梱しない(絶対パス参照)」なので、同梱を有効にすると通るのに既定だと
         /// 消えるという食い違いになっていた(2026-08-08 監査)。
-        static readonly string[] AbsAllowedExts = {
-            ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".avif",
+        /// ★LogRedactor の「ファイル名を伏せる」拡張子の一覧もここから作る(素材として通るのに
+        /// 伏せ字から漏れる種類を作らない・2026-10-20c)。
+        internal static readonly string[] AbsAllowedExts = {
+            // ★.svg も入れる。書き庭は SVG を正規の画像素材として受け付け、YMM4 も同梱の SvgImageSourcePlugin
+            //   (YukkuriMovieMaker.Plugin.FileSource.Svg.dll・v4.56.1 で確認)で描ける。以前はここに無く、
+            //   同梱(相対パス)なら置けるのに既定の「同梱しない」では黙ってスキップされていた(2026-10-21 18周目)
+            ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".avif", ".svg",
             ".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".opus",
             ".mp4", ".webm", ".mov", ".avi", ".mkv",
             ".psd",
@@ -357,7 +517,60 @@ namespace KakiniwaYmm4Import
             catch { return null; }
             // 正規化後に packDir 配下か(..\ での脱出を弾く)。Windows は大小無視。
             if (!full.StartsWith(baseWithSep, StringComparison.OrdinalIgnoreCase)) return null;
+            // ★相対パスでも素材らしい拡張子だけ(絶対パスと同じ)。以前は相対なら何でも通した(2026-10-22 監査)
+            if (Array.IndexOf(AbsAllowedExts, Path.GetExtension(full).ToLowerInvariant()) < 0) return null;
+            // ★パックの中のフォルダがリンク(ジャンクション等)でリモート(UNC)を指していたら読まない。
+            //   File.Exists がリンクをたどった時点で、相手の SMB へ NTLM ハッシュが飛ぶ(2026-10-22 監査)。
+            //   上の階層から順に、たどる前に調べる
+            if (PathHasRemoteLink(packDir, full)) return null;
             return File.Exists(full) ? full : null;
+        }
+
+        /// <summary>packDir から full までの各階層(packDir 自身は含めない)を上から順に見て、
+        /// リンクのリンク先がリモート(UNC・\\?\UNC)なら true。調べられなかったときも true(=読まない側)。
+        /// ★下の階層を見る前に上の階層を見る(リモートを指すリンクの中へ入る前に止める)。</summary>
+        internal static bool PathHasRemoteLink(string packDir, string full)
+        {
+            try
+            {
+                var baseFull = Path.GetFullPath(packDir).TrimEnd(Path.DirectorySeparatorChar);
+                var target = Path.GetFullPath(full);
+                if (!target.StartsWith(baseFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                var rest = target.Substring(baseFull.Length + 1).Split(Path.DirectorySeparatorChar);
+                var cur = baseFull;
+                foreach (var part in rest)
+                {
+                    cur = Path.Combine(cur, part);
+                    var lt = LinkTargetOf(cur);
+                    if (lt == null) continue;
+                    var abs = Path.IsPathRooted(lt) ? lt : Path.Combine(Path.GetDirectoryName(cur) ?? "", lt);
+                    if (IsRemotePath(abs)) return true;
+                }
+                return false;
+            }
+            catch { return true; }
+        }
+
+        /// <summary>そのファイル・フォルダ自身がリンクならリンク先(無い・リンクでなければ null)。
+        /// リンクそのものの属性だけを見て、リンク先へはたどらない。</summary>
+        static string? LinkTargetOf(string path)
+        {
+            FileSystemInfo fi = new DirectoryInfo(path);
+            if (!fi.Exists) fi = new FileInfo(path);
+            if (!fi.Exists) return null;
+            if ((fi.Attributes & FileAttributes.ReparsePoint) == 0) return null;
+            return fi.LinkTarget;
+        }
+
+        /// <summary>リモート(ネットワーク)を指すパスか。\\server\share・\\?\UNC\…・//server/… を見る。</summary>
+        internal static bool IsRemotePath(string p)
+        {
+            var s = (p ?? "").Replace('/', '\\');
+            if (s.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith(@"\??\UNC\", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith(@"\\?\") || s.StartsWith(@"\??\")) return false; // \\?\C:\… はローカル
+            return s.StartsWith(@"\\");
         }
 
         /// <summary>書き込み先を決める用途の解決。ResolveInPack と違い絶対パス(ローカル・UNC とも)を
@@ -369,7 +582,46 @@ namespace KakiniwaYmm4Import
         {
             if (string.IsNullOrEmpty(path)) return null;
             if (Path.IsPathRooted(path) || path.StartsWith(@"\\")) return null;
-            return ResolveInPack(packDir, path);
+            var full = ResolveInPack(packDir, path);
+            if (full == null) return null;
+            // ★文字列の上では配下でも、途中のフォルダがジャンクション/シンボリックリンクなら
+            //   実際の書き込みはパックの外へ出る。解決した経路の各階層を調べ、あれば断る(2026-10-20c)
+            return PathHasLink(packDir, full) ? null : full;
+        }
+
+        /// <summary>full(packDir 配下の絶対パス)から packDir 自身までの各階層に、
+        /// リンク(シンボリックリンク・ジャンクション・マウントポイント)があれば true。
+        /// 調べられなかったときも true(=書かない側)。
+        /// ★属性の ReparsePoint だけで断らないのは、OneDrive のオンライン専用ファイルなど
+        /// 「リンクではない reparse point」でも立つため(LinkTarget は null になる)。</summary>
+        internal static bool PathHasLink(string packDir, string full)
+        {
+            try
+            {
+                var baseFull = Path.GetFullPath(packDir).TrimEnd(Path.DirectorySeparatorChar);
+                var cur = Path.GetFullPath(full).TrimEnd(Path.DirectorySeparatorChar);
+                if (!(cur + Path.DirectorySeparatorChar).StartsWith(baseFull + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase))
+                    return true; // 配下でない(呼び出し側の前提が崩れている)
+                while (true)
+                {
+                    if (IsLink(cur)) return true;
+                    if (string.Equals(cur, baseFull, StringComparison.OrdinalIgnoreCase)) return false;
+                    var parent = Path.GetDirectoryName(cur);
+                    if (string.IsNullOrEmpty(parent)) return true;
+                    cur = parent.TrimEnd(Path.DirectorySeparatorChar);
+                }
+            }
+            catch { return true; }
+        }
+
+        /// <summary>そのファイル・フォルダ自身がリンクか(無ければ false)。</summary>
+        internal static bool IsLink(string path)
+        {
+            FileSystemInfo fi = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
+            if (!fi.Exists) return false;
+            if ((fi.Attributes & FileAttributes.ReparsePoint) == 0) return false;
+            return fi.LinkTarget != null;
         }
 
         /// <summary>パック相対パスを実ファイルの絶対パスへ。存在しない/パック外なら null。</summary>

@@ -20,14 +20,21 @@ on:
     branches: [main]
   pull_request:
 
+# 読み取りだけ。PR のテストに書き込み権限は要りません。
+permissions:
+  contents: read
+
 jobs:
   test:
     # スタブのビルドと dotnet test。windows なのは、プラグイン本体が WPF(UseWPF)を
     # 使う都合で TargetFramework が net10.0-windows のため。
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      # action はコミット SHA で固定します(タグは差し替えられるため。`# vX` は Dependabot が読む注記)。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 10.0.x
       - name: YMM4スタブのビルド(本体が無くてもテストできるようにする)

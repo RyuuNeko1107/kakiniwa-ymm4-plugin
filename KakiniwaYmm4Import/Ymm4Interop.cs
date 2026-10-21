@@ -274,7 +274,7 @@ namespace KakiniwaYmm4Import
         static async System.Threading.Tasks.Task<Tuple<bool, VoiceItem?>> AddVoiceViaMainModel(
             object mainModel, int frame, int layer, object character, string serif, Action<string> log)
         {
-            var shortSerif = serif.Length > 12 ? serif.Substring(0, 12) + "…" : serif;
+            var shortSerif = ShortSerif(serif);
             try
             {
                 var m = mainModel.GetType()
@@ -352,7 +352,7 @@ namespace KakiniwaYmm4Import
                 // 公式の台本編集と同じく、生成が済んだ直後に実尺を取り直す(ここで尺が確定する)
                 if (videoInfo != null) ResetVoiceLength(item, videoInfo, log);
 
-                var shortSerif = serif.Length > 12 ? serif.Substring(0, 12) + "…" : serif;
+                var shortSerif = ShortSerif(serif);
                 Func<string, object?> read = name =>
                 {
                     var p2 = FindProp(item.GetType(), name);
@@ -378,7 +378,7 @@ namespace KakiniwaYmm4Import
         static async System.Threading.Tasks.Task<VoiceItem?> CreateVoiceItemOfficial(
             object character, string serif, string? reading, object? videoInfo, Action<string> log)
         {
-            var shortSerif = serif.Length > 12 ? serif.Substring(0, 12) + "…" : serif;
+            var shortSerif = ShortSerif(serif);
             try
             {
                 var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -441,6 +441,14 @@ namespace KakiniwaYmm4Import
                 log(Tr.T("log.reset.fail", ex.InnerException != null ? ex.InnerException.Message : ex.Message));
                 return false;
             }
+        }
+
+        /// <summary>ログに出すセリフの頭(12文字)。★折り返しを外してから切る。改行が残ると「」が行をまたぎ、
+        /// 保存ログの伏せ字(「…」の中を文字数にする)から漏れる(2026-10-22 監査)</summary>
+        internal static string ShortSerif(string serif)
+        {
+            var one = SingleLine(serif ?? "");
+            return one.Length > 12 ? FirstChars(one, 12) + "…" : one;
         }
 
         static Tuple<string, object> P(string name, object value)
@@ -813,6 +821,13 @@ namespace KakiniwaYmm4Import
         /// From/To 型と Values[].Value 型の両対応</summary>
         static bool SetAnim(object item, string name, double value, Action<string> log)
         {
+            // ★有限でない値(Infinity/NaN)は YMM4 に渡さない。0 除算や巨大な倍率で生まれ、
+            //   描画やプロジェクトの保存を壊しうる(2026-10-20c)。上流で防いでいても入口で断る
+            if (!double.IsFinite(value))
+            {
+                log(Tr.T("log.i.animNotFinite", name));
+                return false;
+            }
             try
             {
                 var pi = FindProp(item.GetType(), name);

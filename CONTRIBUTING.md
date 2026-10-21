@@ -45,12 +45,16 @@ dotnet test KakiniwaYmm4Import.Tests    # 純ロジックのテスト
    重なり順は 背景 < BGM < SE < ト書き < キャラ < 小物 < エフェクト < 窓 < ボイス。
    小物は「時間が重ならないものを同じレーンに畳む」(区間グラフの貪欲彩色 =
    `AssignGreedySlots`)
+3.5 **セリフのボイスを先にまとめて作る** — 公式の台本と同じく、全セリフのボイスを並列で作っておく
+   (`VoicePrefetch.cs`。同時数は声のエンジンの種類ごとの表・設定 `VoiceConcurrency`)。
+   下の 4. は作れたものを使い、作れなかった行だけ従来の経路で作る。ログは行ごとに溜めて 4. の順で出す
 4. **イベントを順に置く** — セリフ・立ち絵・表情・背景・BGM・SE・小物・窓・エフェクト。
    立ち絵の切替や退場では、前のアイテムの尺をその時点で切り詰める
 5. **ボイスの実尺を待つ** — YMM4 が音声を生成し終えるまで待つ(`WaitForVoiceLengths`)
 6. **実尺で並べ直す** — 見積り時間で置いたものを、実際の音声の長さで前から詰め直す
    (`ResequenceByVoiceLength`)。立ち絵・表情の終端もボイスに合わせる
-7. **後始末** — 衝突解決・診断ログ・声の設定メモの案内
+7. **後始末** — 衝突解決・診断ログ・声の設定メモの案内。最後に段階ごとの所要時間を長い順に出す
+   (`StageTimer.cs`。遅いという報告はここを見る)
 
 ### 手を入れやすいところ
 
@@ -61,6 +65,7 @@ dotnet test KakiniwaYmm4Import.Tests    # 純ロジックのテスト
 - `DecideTachieHostName` / `PlanPortraitSwitch` / `PortraitCutTachieNewLength` — 立ち絵の切替
 - `FindPortrait` / `PortraitAssignedName` / `FindYmm4CharacterByName` — 名前の解決
 - `ShiftDeltaAt` — 再配置のずらし量
+- `VoiceConcurrency.LimitFor` / `VoicePrefetch.RunAsync` / `VoicePrefetch.Decide` — ボイスの先作り(同時数・順番・作り直しの判断)
 
 新しい判断を足すときも、**まず純関数として切り出してテストを書く**のがこのコードベースの
 流儀です。`Run()` の中に条件を書き足すと、誰も試験できなくなります。

@@ -41,14 +41,29 @@ namespace KakiniwaYmm4Import
                 var ext = Path.GetExtension(path).ToLowerInvariant();
                 using (var fs = File.OpenRead(path))
                 {
-                    if (ext == ".wav") return WavDuration(fs);
-                    if (ext == ".mp3") return Mp3Duration(fs);
-                    if (ext == ".ogg" || ext == ".opus") return OggDuration(fs);
+                    if (ext == ".wav") return SaneAudioSeconds(WavDuration(fs));
+                    if (ext == ".mp3") return SaneAudioSeconds(Mp3Duration(fs));
+                    if (ext == ".ogg" || ext == ".opus") return SaneAudioSeconds(OggDuration(fs));
                 }
             }
             catch { }
             return null;
         }
+
+        /// <summary>ヘッダから読んだ尺を信じてよいか。0 より大きく上限(6時間)以下のときだけ使う。
+        /// ★壊れた・細工されたヘッダは何十年分もの尺を名乗れる。そのまま使うとフレーム数が
+        /// あふれて負の長さになる(2026-10-20c)。読めない扱い(null)にして既定の尺へ倒す。</summary>
+        internal static double? SaneAudioSeconds(double? sec)
+        {
+            if (sec == null) return null;
+            var v = sec.Value;
+            return double.IsFinite(v) && v > 0 && v <= PackLimits.MaxAudioSeconds ? v : (double?)null;
+        }
+
+        /// <summary>画像の縦横を信じてよいか。0 より大きく上限以下のときだけ使う
+        /// (0 で割ると拡大率が Infinity、巨大値だと 0 になる)。</summary>
+        internal static bool SaneImageSize(double w, double h)
+            => w > 0 && h > 0 && w <= PackLimits.MaxImagePixels && h <= PackLimits.MaxImagePixels;
 
         static double? WavDuration(FileStream fs)
         {
@@ -122,7 +137,8 @@ namespace KakiniwaYmm4Import
                         var flags = (buf[off + 4] << 24) | (buf[off + 5] << 16) | (buf[off + 6] << 8) | buf[off + 7];
                         if ((flags & 1) != 0 && off + 12 < n)
                         {
-                            var frames = (buf[off + 8] << 24) | (buf[off + 9] << 16) | (buf[off + 10] << 8) | buf[off + 11];
+                            // ★符号無しで読む。最上位ビットが立つと int では負の尺になる(2026-10-20c)
+                            var frames = (uint)((buf[off + 8] << 24) | (buf[off + 9] << 16) | (buf[off + 10] << 8) | buf[off + 11]);
                             return frames * (double)samplesPerFrame / rate;
                         }
                     }
@@ -180,7 +196,7 @@ namespace KakiniwaYmm4Import
                             || header[2] != (byte)'P' || header[3] != (byte)'S') return null;
                         double h = (uint)((header[14] << 24) | (header[15] << 16) | (header[16] << 8) | header[17]);
                         double w = (uint)((header[18] << 24) | (header[19] << 16) | (header[20] << 8) | header[21]);
-                        return Tuple.Create(w, h);
+                        return SaneImageSize(w, h) ? Tuple.Create(w, h) : null;
                     }
                 }
                 using (var fs = File.OpenRead(path))
@@ -188,7 +204,8 @@ namespace KakiniwaYmm4Import
                     var frame = System.Windows.Media.Imaging.BitmapFrame.Create(fs,
                         System.Windows.Media.Imaging.BitmapCreateOptions.DelayCreation,
                         System.Windows.Media.Imaging.BitmapCacheOption.None);
-                    return Tuple.Create((double)frame.PixelWidth, (double)frame.PixelHeight);
+                    double w2 = frame.PixelWidth, h2 = frame.PixelHeight;
+                    return SaneImageSize(w2, h2) ? Tuple.Create(w2, h2) : null;
                 }
             }
             catch { return null; }
